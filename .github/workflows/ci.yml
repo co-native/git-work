@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # All three deliberately. The tool is filesystem and git manipulation, so
+    # platform differences are load-bearing rather than incidental: macOS and
+    # Windows are case-insensitive by default, Windows has a second path
+    # separator, and .gitattributes is what keeps its checkout from arriving as
+    # CRLF. fail-fast is off so one platform's failure still reports the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      # Git for Windows ships with core.autocrlf=true, which would rewrite line
+      # endings in the throwaway repos the tests build as fixtures. Turning it
+      # off keeps those deterministic and papers over nothing real: git-work
+      # never reads the contents of a managed repo's files, and the files it
+      # does write live in the work folder, which is not a git repo.
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      # Otherwise the suite shells out to real git and needs no identity and no
+      # global config, so there is nothing to set up.
+      - run: go test ./... -count=1
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make fmt-go-check
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: make fmt-md-check
+
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+
+  dco:
+    # Every commit in a PR must carry a Signed-off-by trailer, certifying the
+    # DCO in the repo root. The repository's own "require sign-off on web-based
+    # commits" setting only covers commits authored in the browser, which is not
+    # the route contributors actually use - this covers pushed commits.
+    #
+    # PRs only: a maintainer pushing straight to main is not making a
+    # contribution to certify, and gating that would just block releases.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check every commit is signed off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bad=0
+          for sha in $(git rev-list "$BASE".."$HEAD"); do
+            desc=$(git log -1 --format='%h %s' "$sha")
+            # The AUTHOR, not the committer: the author is who is certifying,
+            # and a rebase rewrites the committer while leaving them intact.
+            author=$(git log -1 --format='%ae' "$sha")
+            # Dependabot authors as <...+dependabot[bot]@users.noreply.github.com>
+            # but GitHub always signs it off as <support@github.com>, so the two
+            # can never match and every dependency PR would fail. Its commits
+            # bump version strings; there is no human provenance to certify.
+            # Matched on the commit author rather than the PR actor, so a human
+            # re-running the checks does not change the verdict.
+            case "$author" in
+              *'dependabot[bot]'*) echo "skipping bot commit: $desc"; continue ;;
+            esac
+            # sed rather than grep so an unsigned commit yields empty output
+            # instead of a nonzero exit that set -e would turn into a crash.
+            signoffs=$(git log -1 --format='%B' "$sha" |
+              sed -nE 's/^[[:space:]]*[Ss]igned-[Oo]ff-[Bb]y:.*<([^>]+)>.*$/\1/p')
+            if [ -z "$signoffs" ]; then
+              echo "::error::missing Signed-off-by: $desc"
+              bad=1
+            # At least one trailer must match: a commit legitimately carries
+            # several when it passed through other hands (DCO clause (c)).
+            elif ! printf '%s\n' "$signoffs" | grep -qiFx -- "$author"; then
+              echo "::error::sign-off does not match the author of $desc"
+              echo "           author:   $author"
+              echo "           signed:   $(printf '%s' "$signoffs" | tr '\n' ' ')"
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo
+            echo "Every commit needs a Signed-off-by whose address matches its author."
+            echo "  new commits:      git commit -s"
+            echo "  existing commits: git rebase --signoff $BASE"
+            echo "A mismatch usually means the trailer was hand-written, or the commit"
+            echo "was made under a different git user.email than it was signed with -"
+            echo "a GitHub noreply address on one side and a real one on the other is"
+            echo "the common case."
+            echo "See the DCO file in the repository root."
+            exit 1
+          fi
+          echo "all commits signed off, and the addresses match"

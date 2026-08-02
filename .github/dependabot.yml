@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # Go modules. Minor and patch bumps are batched into a single weekly PR: the
+  # charmbracelet TUI tree brings ~25 indirect dependencies, and one PR each
+  # would bury the repo. Major bumps are deliberately left ungrouped so a
+  # breaking change arrives on its own and can be judged on its own.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Workflow actions. Grouped wholesale - these are version-tag bumps on
+  # first-party actions, and CI either passes or it does not.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,0 +1,20 @@
+name: Release
+
+# Tagging is what gives `go install github.com/co-native/git-work@latest` a real
+# version to report; untagged it falls back to a pseudo-version. No binaries are
+# attached - go install is the distribution path.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

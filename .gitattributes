@@ -1,0 +1,5 @@
+# Normalise to LF in the working tree on every platform. git-work writes and
+# re-reads its own generated files and compares multi-line output in tests, so a
+# CRLF checkout on Windows would break both. Binary files are detected by
+# text=auto and left alone.
+* text=auto eol=lf
