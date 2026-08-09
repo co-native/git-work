@@ -541,6 +541,28 @@ func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 	return commits, nil
 }
 
+// CommitsAhead returns the commits on branch that are not on target - plain
+// `git rev-list` ancestry, oldest first. Unlike CommitsNotIn it does no
+// patch-equivalence filtering: a rebased or amended branch holds the same
+// patches under new SHAs, and the ref still needs a push to move, so those
+// commits must count. CommitsNotIn answers "is the content in target";
+// CommitsAhead answers "does target's ref need updating".
+func CommitsAhead(mainDir, branch, target string) ([]Commit, error) {
+	out, err := git(mainDir, "rev-list", "--reverse", target+".."+branch)
+	if err != nil {
+		return nil, err
+	}
+	var commits []Commit
+	for _, sha := range strings.Fields(out) {
+		subject, err := git(mainDir, "show", "-s", "--format=%s", sha)
+		if err != nil {
+			return nil, err
+		}
+		commits = append(commits, Commit{SHA: sha, Subject: strings.TrimSpace(subject)})
+	}
+	return commits, nil
+}
+
 // CherryPickStatus classifies CherryPick's outcome.
 type CherryPickStatus int
 

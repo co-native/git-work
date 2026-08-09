@@ -354,6 +354,143 @@ func TestPushForceWithLease(t *testing.T) {
 	}
 }
 
+// TestPushIntegratedUnpublishedBranchReachesOrigin pins leg one's reference
+// point: an integrate without --push moves the commits onto local main only,
+// so measured against the LOCAL default branch there would be nothing to do -
+// but origin has the work nowhere at all. push must publish the branch.
+func TestPushIntegratedUnpublishedBranchReachesOrigin(t *testing.T) {
+	l, workDir := newLayout(t)
+	origin := makeOrigin(t)
+	setupWorkBranch(t, l, workDir, "alpha", origin, 1)
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "merge", "-q", "--ff-only", "PROJ-1-work")
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	var perr error
+	out := captureStdout(t, func() { perr = push(&options{all: true}, l, st, workDir) })
+	if perr != nil {
+		t.Fatalf("push -a after local-only integrate: %v", perr)
+	}
+	if got := originBranchCount(t, origin, "PROJ-1-work"); got != 2 {
+		t.Fatalf("origin PROJ-1-work commit count = %d; want 2 (base + feat 0)", got)
+	}
+	if got := originBranchCount(t, origin, "main"); got != 1 {
+		t.Fatalf("origin main commit count = %d; want 1 (push must not touch main)", got)
+	}
+	if !strings.Contains(out, "alpha: pushing 1 commit(s) to origin/PROJ-1-work") ||
+		!strings.Contains(out, "feat 0") {
+		t.Errorf("output = %q; want the unpublished commit reported", out)
+	}
+}
+
+// TestPushIntegratedAndPushedMainStaysLocal pins the complement: once the
+// integrated commits are on origin/<default>, a branch that was never
+// published has nothing origin lacks and stays local - the untouched-repo
+// protection that keeps --all from littering origin with placeholder branches.
+func TestPushIntegratedAndPushedMainStaysLocal(t *testing.T) {
+	l, workDir := newLayout(t)
+	origin := makeOrigin(t)
+	setupWorkBranch(t, l, workDir, "alpha", origin, 1)
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "merge", "-q", "--ff-only", "PROJ-1-work")
+	runGit(t, main, "push", "-q", "origin", "main")
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	if err := push(&options{all: true}, l, st, workDir); err != nil {
+		t.Fatalf("push -a: %v", err)
+	}
+	if got := originBranchCount(t, origin, "PROJ-1-work"); got != -1 {
+		t.Errorf("origin PROJ-1-work exists (count %d); want the published-via-main branch kept local", got)
+	}
+}
+
+// TestPushAfterIntegrateUpdatesRemoteBranch pins the second scope leg: once
+// commits are integrated and the default branch pushed, leg one is zero, but
+// origin's feature branch may still be missing the last of them. push must
+// bring origin/<branch> up to date rather than skip the repo.
+func TestPushAfterIntegrateUpdatesRemoteBranch(t *testing.T) {
+	l, workDir := newLayout(t)
+	origin := makeOrigin(t)
+	wt := setupWorkBranch(t, l, workDir, "alpha", origin, 1)
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	if err := push(&options{repo: "alpha"}, l, st, workDir); err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+
+	// One more commit, then integrate and push main - what `git work
+	// integrate --push` leaves behind (fast-forward route).
+	writeCommit(t, wt, "feat1.txt", "feature 1\n", "feat 1")
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "merge", "-q", "--ff-only", "PROJ-1-work")
+	runGit(t, main, "push", "-q", "origin", "main")
+
+	var perr error
+	out := captureStdout(t, func() { perr = push(&options{all: true}, l, st, workDir) })
+	if perr != nil {
+		t.Fatalf("push -a after integrate: %v", perr)
+	}
+	if got := originBranchCount(t, origin, "PROJ-1-work"); got != 3 {
+		t.Fatalf("origin PROJ-1-work commit count = %d; want 3 (base + feat 0 + feat 1)", got)
+	}
+	if !strings.Contains(out, "alpha: pushing 1 commit(s) to origin/PROJ-1-work") ||
+		!strings.Contains(out, "feat 1") {
+		t.Errorf("output = %q; want the unpushed commit reported", out)
+	}
+
+	// With origin/<branch> current and nothing un-integrated, a re-run skips.
+	out = captureStdout(t, func() { perr = push(&options{all: true}, l, st, workDir) })
+	if perr != nil {
+		t.Fatalf("re-run push -a: %v", perr)
+	}
+	if strings.Contains(out, "pushed") {
+		t.Errorf("output = %q; want the up-to-date repo skipped", out)
+	}
+}
+
+// TestPushAfterRewriteStaysInScope pins the unpushed leg's ancestry
+// measurement: an amended (or rebased) branch holds the same patches under new
+// SHAs, so patch equivalence sees nothing to push while origin's ref still
+// needs moving. The repo must stay in scope, surfacing the usual
+// non-fast-forward rejection and succeeding with -f.
+func TestPushAfterRewriteStaysInScope(t *testing.T) {
+	l, workDir := newLayout(t)
+	origin := makeOrigin(t)
+	wt := setupWorkBranch(t, l, workDir, "alpha", origin, 1)
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	if err := push(&options{repo: "alpha"}, l, st, workDir); err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "merge", "-q", "--ff-only", "PROJ-1-work")
+
+	// Message-only amend: identical patch, new SHA.
+	runGit(t, wt, "commit", "-q", "--amend", "-m", "feat 0 reworded")
+	if err := push(&options{all: true}, l, st, workDir); err == nil {
+		t.Fatal("push after amend: expected non-fast-forward rejection without -f")
+	}
+	if err := push(&options{all: true, force: true}, l, st, workDir); err != nil {
+		t.Fatalf("push -f after amend: %v", err)
+	}
+	subj := strings.TrimSpace(runGit(t, origin, "log", "-1", "--format=%s", "PROJ-1-work"))
+	if subj != "feat 0 reworded" {
+		t.Errorf("origin tip subject = %q; want the reworded commit", subj)
+	}
+}
+
 // commitOnMain commits n changes directly on the primary clone's default branch,
 // standing in for what `git work integrate` leaves behind: local main ahead of
 // origin/main, and a work branch whose commits are already there.

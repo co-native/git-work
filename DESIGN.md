@@ -40,7 +40,7 @@ commands:
   adopt <dir>                       register an existing worktree dir in the current work folder
   refresh                           pull the ticket repos' primaries, re-render generated files
   rebase <repo> | --all             pull the repos' primaries, rebase work branches onto their defaults
-  push <repo> | --all               push work branches with un-integrated commits to origin
+  push <repo> | --all               push work branches with unpushed commits to origin
   integrate <repo> | --all          move a work branch's un-integrated commits onto its default branch
   git <repo> | --all -- <args>      run a git command in each repo's worktree
   done <dir>                        tear down a work folder
@@ -248,12 +248,24 @@ Pushes work branches to origin - the multi-repo equivalent of `cd`-ing into each
 and running `git push`. Scope is one repo (`<repo>`) or every repo in the work folder
 (`-a`/`--all`); bare `push` is a usage error, same shape as `integrate`.
 
-A repo is pushed when its work branch has **un-integrated commits** - commits not on the
-_local_ default branch (see `CONTEXT.md`; distinct from _unpushed_, which measures against
-`@{upstream}`). An **empty branch** (zero un-integrated commits) is skipped with a note
-unless `-e`/`--allow-empty`, which pushes it as a remote placeholder; the predicate
-applies uniformly - naming a repo does not bypass it. Already-fully-pushed repos stay in
-scope and no-op via git ("Everything up-to-date"), matching normal `git push`.
+A repo is pushed when its work branch has **unpublished commits** - commits origin does
+not have yet, on either ref it could hold them. Leg one asks whether `origin/<default>`
+lacks any of the branch's commits (`git cherry` patch equivalence, like `integrate`); leg
+two whether `origin/<branch>` does (plain `git rev-list` ancestry - a rebased or amended
+branch holds the same patches under new SHAs, and the ref still needs the push, with `-f`,
+to move). Both reference points are origin's, deliberately: push's whole job is origin,
+and the local default branch - leg one's original reference - goes quiet the moment an
+integrate runs, which skipped exactly the push that would first publish the branch of an
+operator who integrates before pushing. The local default branch stands in for leg one
+only when origin has no default branch at all (a local-only repo). The report counts leg
+two when non-empty, since that is what the push will actually transfer, and falls back to
+leg one (a first push, or the fully-pushed repo staying in scope to no-op via git's
+"Everything up-to-date", matching normal `git push`). A branch with nothing origin lacks -
+fully published, or fully integrated with its integration pushed - is skipped with a note
+unless `-e`/`--allow-empty`, which pushes it anyway (as a remote placeholder when new);
+the predicate applies uniformly - naming a repo does not bypass it. An untouched branch is
+an ancestor of origin's default, so it counts zero on both legs and `--all` cannot litter
+origin with placeholder branches.
 
 Each push runs `git push -u origin <branch>` from the repo's worktree
 (`repo.PushBranchUpstream`), targeting the branch recorded in state - not whatever the
@@ -285,16 +297,16 @@ ahead of origin.
 The mode is deliberately independent of the work branch and the worktree. It reads only
 the primary clone (`git push origin <default>` via `repo.PushBranch`), so neither a
 torn-down worktree nor a deleted work branch skips a repo - after `integrate` the commits
-live on the default branch, and the work branch has _zero_ un-integrated commits, exactly
-the state the default mode skips. Riding on the default mode's predicate would have made
-`--main` a no-op in the one situation it exists for, so the default branch gets its own:
-the commits in local `<default>` that are not on `origin/<default>` (`git cherry`, same
-patch-equivalence semantics as everywhere else). Zero means "nothing to push", skipped
-with a note unless `-e`/`--allow-empty`, which pushes anyway (git then reports "Everything
-up-to-date"). A missing `origin/<default>` cannot be measured, so the push simply proceeds
-and is reported as a new branch. Still **no fetch** first, consistent with the work-branch
-mode: a stale `origin/<default>` costs at most a redundant push attempt or a rejection
-that lands in the failure list, never a wrong ref.
+live on the default branch, which the default mode never touches: pushing the work branch
+can bring `origin/<branch>` up to date, never `origin/<default>`. So the default branch
+gets its own predicate: the commits in local `<default>` that are not on
+`origin/<default>` (`git cherry`, same patch-equivalence semantics as everywhere else).
+Zero means "nothing to push", skipped with a note unless `-e`/`--allow-empty`, which
+pushes anyway (git then reports "Everything up-to-date"). A missing `origin/<default>`
+cannot be measured, so the push simply proceeds and is reported as a new branch. Still
+**no fetch** first, consistent with the work-branch mode: a stale `origin/<default>` costs
+at most a redundant push attempt or a rejection that lands in the failure list, never a
+wrong ref.
 
 `-f`/`--force` combined with `--main` is a **usage error**, not a silent no-op: a default
 branch is shared history and git-work never rewrites it. A rejection therefore points at

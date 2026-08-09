@@ -29,7 +29,7 @@ type options struct {
 // `git work push -h` prints.
 var Cmd = &cli.Command{
 	Name:  "push",
-	Short: "push work branches with un-integrated commits to origin",
+	Short: "push work branches with unpushed commits to origin",
 	Args:  "<repo> | --all",
 	Synopsis: []string{
 		"git work push <repo> [options]",
@@ -37,8 +37,9 @@ var Cmd = &cli.Command{
 	},
 	Long: "Pushes work branches to origin - the multi-repo equivalent of `cd`-ing into\n" +
 		"each worktree and running `git push`. A repo is pushed when its work branch\n" +
-		"has un-integrated commits (commits not on the local default branch, distinct from\n" +
-		"unpushed, which measures against @{upstream}). Scope is mandatory.",
+		"has commits origin does not have yet: missing from origin/<default> (the local\n" +
+		"default branch stands in while origin has none) or from origin/<branch> - so\n" +
+		"integrated-but-unpushed work still reaches origin. Scope is mandatory.",
 	Flags: []cli.Flag{
 		{Short: "a", Long: "all", Desc: "push every repo in the work folder"},
 		{Short: "f", Long: "force", Desc: "force-push (uses --force-with-lease, never bare --force)"},
@@ -226,18 +227,62 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 		return
 	}
 
-	// Scope predicate: un-integrated commits, measured against the LOCAL
-	// default branch - no fetch first, deliberately: --force-with-lease
-	// uses the remote-tracking refs as the lease, and fetching right
-	// before pushing would weaken that protection.
-	unintegrated, err := repo.CommitsNotIn(main, r.Branch, defBranch)
+	// Scope predicate, leg one: commits origin's default branch lacks -
+	// patch equivalence against the origin/<default> remote-tracking ref.
+	// No fetch first, deliberately: --force-with-lease uses the
+	// remote-tracking refs as the lease, and fetching right before pushing
+	// would weaken that protection. Push publishes to origin, so "is there
+	// work to publish" is asked of origin: measured against the LOCAL
+	// default branch instead, this leg goes quiet the moment an integrate
+	// runs, skipping the push that would first publish the branch. Only when
+	// origin has no default branch (a local-only repo) does the local one
+	// stand in.
+	defRef := defBranch
+	hasDefRemote, err := repo.RemoteBranchExists(main, defBranch)
 	if err != nil {
-		fail("%s: could not compute un-integrated commits: %v", r.Name, err)
+		fail("%s: could not check origin/%s: %v", r.Name, defBranch, err)
 		return
 	}
-	if len(unintegrated) == 0 && !o.allowEmpty {
-		fmt.Fprintf(os.Stderr, "git-work: %s: no commits since %s; skipped (use -e/--allow-empty)\n", r.Name, defBranch)
+	if hasDefRemote {
+		defRef = "origin/" + defBranch
+	}
+	unpublished, err := repo.CommitsNotIn(main, r.Branch, defRef)
+	if err != nil {
+		fail("%s: could not compute unpublished commits: %v", r.Name, err)
 		return
+	}
+	// Leg two: commits origin/<branch> lacks. Integrating and pushing the
+	// default branch zeroes leg one without touching the remote feature
+	// branch, so this leg is what keeps the branch's own ref current. Plain
+	// ancestry, not patch equivalence: a rebased or amended branch holds the
+	// same patches under new SHAs and its ref still needs the push (with -f)
+	// to move.
+	var unpushed []repo.Commit
+	hasRemote, err := repo.RemoteBranchExists(main, r.Branch)
+	if err != nil {
+		fail("%s: could not check origin/%s: %v", r.Name, r.Branch, err)
+		return
+	}
+	if hasRemote {
+		if unpushed, err = repo.CommitsAhead(main, r.Branch, "origin/"+r.Branch); err != nil {
+			fail("%s: could not compute unpushed commits: %v", r.Name, err)
+			return
+		}
+	}
+	if len(unpublished) == 0 && len(unpushed) == 0 && !o.allowEmpty {
+		if hasDefRemote {
+			fmt.Fprintf(os.Stderr, "git-work: %s: no commits origin lacks; skipped (use -e/--allow-empty)\n", r.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "git-work: %s: no commits since %s; skipped (use -e/--allow-empty)\n", r.Name, defBranch)
+		}
+		return
+	}
+	// Report what the push will actually transfer when that is measurable
+	// (origin/<branch> exists); fall back to the unpublished list for a
+	// first push, and for the fully-pushed repo that stays in scope to no-op.
+	commits := unpushed
+	if len(commits) == 0 {
+		commits = unpublished
 	}
 
 	verb, forceNote := "pushing", ""
@@ -247,11 +292,11 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 	if o.force {
 		forceNote = " (force-with-lease)"
 	}
-	if len(unintegrated) == 0 {
+	if len(commits) == 0 {
 		fmt.Printf("%s: %s empty branch %s to origin%s\n", r.Name, verb, r.Branch, forceNote)
 	} else {
-		fmt.Printf("%s: %s %d commit(s) to origin/%s%s\n", r.Name, verb, len(unintegrated), r.Branch, forceNote)
-		printCommits(unintegrated)
+		fmt.Printf("%s: %s %d commit(s) to origin/%s%s\n", r.Name, verb, len(commits), r.Branch, forceNote)
+		printCommits(commits)
 	}
 	if o.dryRun {
 		return
