@@ -8,7 +8,15 @@ INSTALL_DIR := $(HOME)/.local/bin
 MD_WIDTH := 90
 MD_FILES := $(shell find . -name '*.md' -not -path './dist/*' -not -path './.git/*')
 
-.PHONY: build install clean test fmt fmt-check fmt-md fmt-md-check fmt-go fmt-go-check
+# CVSS floor for the vulnerability targets. Empty means `vulncheck` reports
+# everything; the fix-dep-vulns targets require a floor and default to 7.0.
+# Advisories with no published score are always listed regardless of this value,
+# and are never auto-fixed; scripts/check-dependency-vulns.sh explains why.
+MIN_SCORE ?=
+FIX_MIN_SCORE := $(or $(MIN_SCORE),7.0)
+
+
+.PHONY: build install clean test fmt fmt-check fmt-md fmt-md-check fmt-go fmt-go-check vulncheck fix-dep-vulns fix-dep-vulns-yes
 
 build:
 	go build -o $(DIST_DIR)/$(BINARY) .
@@ -50,3 +58,23 @@ fmt-go-check:
 		echo "$$stale" >&2; \
 		exit 1; \
 	fi
+
+# Reports known vulnerabilities across the whole module graph, not just the
+# go.mod require list, and annotates each with whether govulncheck can reach
+# it. Deliberately not wired into CI: it depends on three third-party APIs, so
+# a network blip would fail builds for reasons unrelated to the change.
+vulncheck:
+	@./scripts/check-dependency-vulns.sh $(if $(MIN_SCORE),-m $(MIN_SCORE))
+
+# Plans upgrades past every finding at or above FIX_MIN_SCORE and prints them.
+# Changes nothing. Findings in modules absent from go.mod are skipped: they are
+# not compiled in, so upgrading them would add a dependency this module does not
+# use. Targets the lowest release with no known vulns, not merely the lowest one
+# fixing the matched CVE, so a policy gate does not block again on the next.
+fix-dep-vulns:
+	@./scripts/check-dependency-vulns.sh --fix --min-score $(FIX_MIN_SCORE)
+
+# Same, but applies the plan and then verifies: tidy, build, vet, rescan, tests.
+fix-dep-vulns-yes:
+	@./scripts/check-dependency-vulns.sh --fix --yes --min-score $(FIX_MIN_SCORE)
+	$(MAKE) test
