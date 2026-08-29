@@ -834,23 +834,54 @@ func RepairWorktrees(mainDir string, worktreePaths ...string) error {
 	return err
 }
 
-// BranchesMatching returns local branch names containing ticketID delimited
-// by non-alphanumeric boundaries (or the string edges): "PROJ-123" matches
-// "feature/PROJ-123" and "PROJ-123-fix" but not "PROJ-1234" or "XPROJ-123".
-func BranchesMatching(mainDir, ticketID string) ([]string, error) {
+// Candidate is an existing branch that could serve as a repo's work branch.
+type Candidate struct {
+	Branch string // the local branch name, i.e. what a worktree checks out
+	Remote bool   // exists only as origin/<Branch>
+}
+
+// String renders the candidate the way git shows it: a remote-only branch
+// as origin/<branch>, so a listing tells the operator where it lives.
+func (c Candidate) String() string {
+	if c.Remote {
+		return "origin/" + c.Branch
+	}
+	return c.Branch
+}
+
+// BranchesMatching returns the existing branches whose name contains
+// ticketID delimited by non-alphanumerics (so PROJ-1 matches feature/PROJ-1
+// but not PROJ-12), case-insensitively: local branches first, then those
+// that exist only on origin. A branch present in both places counts once,
+// as the local one. Remote candidates are as fresh as the last fetch.
+func BranchesMatching(mainDir, ticketID string) ([]Candidate, error) {
 	re, err := regexp.Compile(`(?i)(^|[^a-zA-Z0-9])` + regexp.QuoteMeta(ticketID) + `([^a-zA-Z0-9]|$)`)
 	if err != nil {
 		return nil, err
 	}
-	out, err := git(mainDir, "branch", "--format=%(refname:short)")
+	out, err := git(mainDir, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return nil, err
 	}
-	var matches []string
+	const heads, remotes = "refs/heads/", "refs/remotes/origin/"
+	local := map[string]bool{}
+	var matches []Candidate
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		b := strings.TrimSpace(line)
-		if b != "" && re.MatchString(b) {
-			matches = append(matches, b)
+		ref := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(ref, heads):
+			b := strings.TrimPrefix(ref, heads)
+			local[b] = true
+			if re.MatchString(b) {
+				matches = append(matches, Candidate{Branch: b})
+			}
+		case strings.HasPrefix(ref, remotes):
+			// for-each-ref lists refs/heads before refs/remotes, so every
+			// local name is known by the time its remote twin comes up.
+			b := strings.TrimPrefix(ref, remotes)
+			if b != "HEAD" && !local[b] && re.MatchString(b) {
+				matches = append(matches, Candidate{Branch: b, Remote: true})
+			}
 		}
 	}
 	return matches, nil
@@ -883,6 +914,18 @@ func refExists(mainDir, ref string) (bool, error) {
 		return false, fmt.Errorf("git show-ref %s: %v", ref, err)
 	}
 	return true, nil
+}
+
+// CheckBranchArg rejects a --branch value spelled as a remote-tracking ref.
+// Git would happily create a local branch literally named origin/<x>, a
+// well-known trap, and the listings that suggest --branch show remote-only
+// candidates with that prefix - so the mistake is easy to make and cheap to
+// refuse. An empty value (flag not given) passes.
+func CheckBranchArg(branch string) error {
+	if strings.HasPrefix(branch, "origin/") {
+		return fmt.Errorf("--branch names a local branch: drop the origin/ prefix (%q)", strings.TrimPrefix(branch, "origin/"))
+	}
+	return nil
 }
 
 // LocalBranchExists reports whether a local branch exists.

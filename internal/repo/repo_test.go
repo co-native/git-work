@@ -727,10 +727,60 @@ func TestBranchesMatchingBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"PROJ-123", "PROJ-123-fix", "feature/PROJ-123"}
-	sort.Strings(got)
+	names := candidateNames(got)
+	sort.Strings(names)
 	sort.Strings(want)
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("BranchesMatching = %v, want %v", names, want)
+	}
+}
+
+// candidateNames renders candidates as the picker and the refusal show them.
+func candidateNames(cs []Candidate) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.String()
+	}
+	return out
+}
+
+// Candidates span origin: a branch that exists only there is listed after
+// the local ones as origin/<name>, and one present in both places counts
+// once, as the local branch.
+func TestBranchesMatchingRemote(t *testing.T) {
+	origin := makeOrigin(t)
+	repoDir := filepath.Join(t.TempDir(), "myrepo")
+	if err := Clone(origin, repoDir, nil); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(repoDir, "main")
+	run(t, main, "git", "branch", "PROJ-7-local")
+	run(t, main, "git", "branch", "PROJ-7-both")
+	pushExtraBranch(t, origin, "PROJ-7-both")
+	pushExtraBranch(t, origin, "feature/PROJ-7")
+	pushExtraBranch(t, origin, "PROJ-70-other")
+	if err := Fetch(main); err != nil {
+		t.Fatal(err)
+	}
+	got, err := BranchesMatching(main, "PROJ-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Candidate{{Branch: "PROJ-7-both"}, {Branch: "PROJ-7-local"}, {Branch: "feature/PROJ-7", Remote: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("BranchesMatching = %v, want %v", got, want)
+	}
+}
+
+func TestCheckBranchArg(t *testing.T) {
+	for _, ok := range []string{"", "feature/x", "origins/x", "my-origin/x"} {
+		if err := CheckBranchArg(ok); err != nil {
+			t.Errorf("CheckBranchArg(%q) = %v, want nil", ok, err)
+		}
+	}
+	err := CheckBranchArg("origin/feature/x")
+	if err == nil || !strings.Contains(err.Error(), `"feature/x"`) {
+		t.Errorf("CheckBranchArg(origin/feature/x) = %v, want a refusal naming feature/x", err)
 	}
 }
 
@@ -752,9 +802,8 @@ func TestBranchesMatchingCaseInsensitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"dev-tools-1-slug"}
-	sort.Strings(got)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("BranchesMatching(DEV-TOOLS-1) = %v, want %v", got, want)
+	if names := candidateNames(got); !reflect.DeepEqual(names, want) {
+		t.Errorf("BranchesMatching(DEV-TOOLS-1) = %v, want %v", names, want)
 	}
 
 	// DEV-TOOLS-12 must NOT match dev-tools-1-slug (boundary check).
@@ -763,9 +812,8 @@ func TestBranchesMatchingCaseInsensitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	want2 := []string{"dev-tools-12-slug"}
-	sort.Strings(got2)
-	if !reflect.DeepEqual(got2, want2) {
-		t.Errorf("BranchesMatching(DEV-TOOLS-12) = %v, want %v", got2, want2)
+	if names := candidateNames(got2); !reflect.DeepEqual(names, want2) {
+		t.Errorf("BranchesMatching(DEV-TOOLS-12) = %v, want %v", names, want2)
 	}
 }
 
@@ -782,7 +830,7 @@ func TestBranchExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "PROJ-9-existing" {
+	if len(got) != 1 || got[0].Branch != "PROJ-9-existing" || got[0].Remote {
 		t.Errorf("BranchesMatching = %v", got)
 	}
 }

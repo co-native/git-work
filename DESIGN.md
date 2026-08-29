@@ -166,11 +166,19 @@ combination used to be an unconditional usage error, and is now one only when no
 repos that are not cloned locally are ignored rather than erroring - a config synced
 across machines will routinely mention repos a given machine does not have.
 
+**Branch.** The work branch defaults to `<ticket>-<slug>` (cased per the provider) and
+`--branch` names it outright. Existing branches for the ticket, local or on origin, are
+handled by [Branch resolution](#branch-resolution); every repo is resolved before the
+folder is created, so a refusal reports all repos in one run and creates nothing.
+
 ### `add [flags]`
 
 Run from inside a work folder (located via `FindUp`). Adds one or more repos - new
 worktrees + branches - to the current ticket and re-aggregates the generated
-`README.md`/`CLAUDE.md`. Shares the branch-resolution flags with `new`:
+`README.md`/`CLAUDE.md`. The folder's work branch is the default for each added repo and
+`--branch` overrides it for the repos being added (recorded per repo in `repos[].branch`);
+existing branches are handled by [Branch resolution](#branch-resolution), resolved for
+every repo before the first worktree is added.
 
 ### `adopt <dir>`
 
@@ -782,15 +790,32 @@ only after `git work refresh`.
 
 ## Branch resolution
 
-When `new`/`add` includes a repo, `repo.ResolveWorkBranch` decides whether to create the
-work branch or reuse an existing one. A branch already carrying the intended name is
-always reused, whether it exists locally or only on origin (after the pre-resolution
-fetch): the remote case is checked out as a local branch tracking `origin/<branch>`
-(`repo.AddTrackingWorktree`), since cutting a second branch of that name from `main` would
-only defer the collision to `push`. Matching is boundary-aware so `PROJ-123` matches
-`feature/PROJ-123` but not `PROJ-1234`. Behavior is controlled by `--reuse-existing` /
-`--always-new`; in `--non-interactive` mode an ambiguous match (multiple candidates, no
-flag) is a hard error rather than a prompt.
+When `new`/`add` includes a repo, `repo.ResolveWorkBranch` decides which branch its
+worktree gets. The rules, in order:
+
+1. A branch already carrying the intended name is always reused, whether it exists locally
+   or only on origin (after the pre-resolution fetch). The remote case is checked out as a
+   local branch tracking `origin/<branch>` (`repo.AddTrackingWorktree`): cutting a second
+   branch of that name from `main` would only defer the collision to `push`.
+2. `--branch` is the whole answer: the named branch is reused by rule 1 or created, and
+   existing branches for the ticket are not consulted. An explicit name that a fuzzy match
+   could override would not be explicit.
+3. Otherwise the existing branches matching the ticket id are candidates - local ones and
+   those that exist only on origin, a branch present in both places counting once, as the
+   local one. Matching is boundary-aware and case-insensitive, so `PROJ-123` matches
+   `feature/PROJ-123` but not `PROJ-1234`. No candidates: the branch is created. With
+   candidates, an interactive run picks one (remote-only ones shown as `origin/<name>`) or
+   "create new"; `--non-interactive` refuses with the full list, for one candidate as much
+   as for several. A lone match is never adopted silently - it may be a teammate's
+   branch - and `--branch <name>` is the one-flag answer for a script or agent that wants
+   it.
+
+Resolution runs for every repo before anything is created (`repo.ResolveWorkBranches`), so
+a refusal reports all repos at once and leaves nothing to roll back. A `--branch` value
+spelled `origin/<name>` is a usage error: git would create a local branch literally named
+that, and the listings above are where the spelling comes from. There are no
+`--reuse-existing`/`--always-new` flags: each pre-answered the picker for scripts, and
+`--branch` answers it more precisely.
 
 ## Worktree/state branch agreement
 

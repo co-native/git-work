@@ -30,7 +30,7 @@ func TestRunHelp(t *testing.T) {
 		if code != cli.OK {
 			t.Fatalf("Run(%s) = %d; want %d", arg, code, cli.OK)
 		}
-		for _, want := range []string{"usage: git work new", "--no-ticket", "--repos", "--description", "--dir", "--branch", "--reuse-existing", "--always-new", "--non-interactive"} {
+		for _, want := range []string{"usage: git work new", "--no-ticket", "--repos", "--description", "--dir", "--branch", "--non-interactive"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("help output = %q; want %q", out, want)
 			}
@@ -46,6 +46,7 @@ func TestRunUsageErrors(t *testing.T) {
 		{"--repos", "a"},         // flags but no positional
 		{"PROJ-1", "stray"},      // a second positional
 		{"PROJ-1", "--nonesuch"}, // an unknown flag
+		{"PROJ-1", "--branch", "origin/feature/x"}, // a remote-tracking spelling of --branch
 	} {
 		var code int
 		_, errOut := captureOutput(t, func() { code = Run(args) })

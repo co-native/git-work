@@ -26,7 +26,7 @@ func TestRunHelp(t *testing.T) {
 		if code != cli.OK {
 			t.Fatalf("Run(%s) = %d; want %d", arg, code, cli.OK)
 		}
-		for _, want := range []string{"usage: git work add", "--repos", "--reuse-existing", "--always-new", "--non-interactive"} {
+		for _, want := range []string{"usage: git work add", "--repos", "--branch", "--non-interactive"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("help output = %q; want %q", out, want)
 			}
@@ -34,16 +34,22 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
-// An unknown flag is a malformed invocation: exit 2 plus the usage block,
-// reported before the command looks for a work folder.
-func TestRunUnknownFlag(t *testing.T) {
-	var code int
-	_, errOut := captureOutput(t, func() { code = Run([]string{"--nonesuch"}) })
-	if code != cli.Usage {
-		t.Errorf("Run(--nonesuch) = %d; want %d", code, cli.Usage)
-	}
-	if !strings.Contains(errOut, "usage: git work add") {
-		t.Errorf("stderr = %q; want the usage block", errOut)
+// A malformed invocation - an unknown flag, or --branch spelled as a
+// remote-tracking ref - exits 2 with the usage block, reported before the
+// command looks for a work folder.
+func TestRunUsageErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"--nonesuch"},
+		{"--repos", "a", "--branch", "origin/feature/x"},
+	} {
+		var code int
+		_, errOut := captureOutput(t, func() { code = Run(args) })
+		if code != cli.Usage {
+			t.Errorf("Run(%v) = %d; want %d", args, code, cli.Usage)
+		}
+		if !strings.Contains(errOut, "usage: git work add") {
+			t.Errorf("Run(%v) stderr = %q; want the usage block", args, errOut)
+		}
 	}
 }
 
@@ -93,12 +99,12 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
-func TestParseFlagsReuseAlwaysNew(t *testing.T) {
-	o, err := parseFlags([]string{"--repos", "beta", "--reuse-existing", "--always-new"})
+func TestParseFlagsBranch(t *testing.T) {
+	o, err := parseFlags([]string{"--repos", "beta", "--branch", "feature/PROJ-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !o.reuseExisting || !o.alwaysNew {
+	if o.branch != "feature/PROJ-1" {
 		t.Errorf("opts = %+v", o)
 	}
 }

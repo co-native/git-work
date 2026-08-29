@@ -19,8 +19,7 @@ import (
 type options struct {
 	reposCSV       string // raw --repos value; split into repos by parseFlags
 	repos          []string
-	reuseExisting  bool
-	alwaysNew      bool
+	branch         string
 	nonInteractive bool
 }
 
@@ -33,18 +32,18 @@ var Cmd = &cli.Command{
 	Synopsis: []string{"git work add [options]"},
 	Long: "Run from inside a work folder. Adds one or more repos - a worktree plus its\n" +
 		"branch per repo - to the current ticket, then re-aggregates the generated\n" +
-		"README.md and CLAUDE.md blocks. Branch resolution matches `new`: a matching\n" +
-		"existing branch is offered for reuse unless --reuse-existing/--always-new\n" +
-		"decides it. Added worktrees are rolled back if a later repo fails.",
+		"README.md and CLAUDE.md blocks. Branch resolution matches `new`: the folder's\n" +
+		"work branch is used, existing branches for the ticket, local or on origin,\n" +
+		"are offered for reuse, and --branch names the branch outright instead.\n" +
+		"Added worktrees are rolled back if a later repo fails.",
 	Examples: []string{
 		"git work add --repos web",
-		"git work add --repos api,web --always-new --non-interactive",
+		"git work add --repos api --branch feature/PROJ-123 --non-interactive",
 	},
 	Flags: []cli.Flag{
 		{Long: "repos", Arg: "<a,b,c>", Desc: "repo names to add; skips the interactive multi-select"},
-		{Long: "reuse-existing", Desc: "reuse a matching existing branch without prompting"},
-		{Long: "always-new", Desc: "always create a new branch without prompting"},
-		{Long: "non-interactive", Desc: "never prompt; fail instead (requires --repos)"},
+		{Long: "branch", Arg: "<name>", Desc: "this exact branch for the added repos, reused if it exists or created; skips ticket matching"},
+		{Long: "non-interactive", Desc: "never prompt; fail instead (requires --repos), also if ticket branches exist"},
 	},
 }
 
@@ -56,8 +55,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	// package would otherwise dump its flag table too.
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.reposCSV, "repos", "", "comma-separated repo names to add")
-	fs.BoolVar(&o.reuseExisting, "reuse-existing", false, "reuse an existing ticket branch without prompting")
-	fs.BoolVar(&o.alwaysNew, "always-new", false, "always create a new branch without prompting")
+	fs.StringVar(&o.branch, "branch", "", "branch name override")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of prompting")
 	return fs
 }
@@ -78,6 +76,9 @@ func parseFlags(args []string) (*options, error) {
 				o.repos = append(o.repos, r)
 			}
 		}
+	}
+	if err := repo.CheckBranchArg(o.branch); err != nil {
+		return nil, cli.Usagef("%v", err)
 	}
 	return o, nil
 }
@@ -162,6 +163,24 @@ func run(args []string) error {
 	if st.NoTicket {
 		matchID = st.Slug
 	}
+	branch := o.branch
+	if branch == "" {
+		branch = st.Branch
+	}
+	// Every repo resolves before anything is created: a refusal reports all
+	// repos at once and leaves nothing to roll back.
+	plan, err := repo.ResolveWorkBranches(o.repos, matchID, branch, repo.PlanOpts{
+		ResolveOpts: repo.ResolveOpts{
+			Explicit:       o.branch != "",
+			NonInteractive: o.nonInteractive,
+			Choose:         tui.Select,
+		},
+		MainOf: l.RepoMain,
+		Warn:   func(msg string) { fmt.Fprintf(os.Stderr, "git-work: %s\n", msg) },
+	})
+	if err != nil {
+		return err
+	}
 
 	success := false
 	var added []string
@@ -178,37 +197,12 @@ func run(args []string) error {
 		}
 	}()
 
-	for _, name := range o.repos {
-		main, err := l.RepoMain(name)
-		if err != nil {
+	for _, p := range plan {
+		if err := p.Choice.Checkout(p.Main, filepath.Join(workDir, p.Name)); err != nil {
 			return err
 		}
-		if err := repo.Fetch(main); err != nil {
-			fmt.Fprintf(os.Stderr, "git-work: fetch %s: %v (continuing with local refs)\n", name, err)
-		}
-		choice, err := repo.ResolveWorkBranch(main, name, matchID, st.Branch, repo.ResolveOpts{
-			ReuseExisting:  o.reuseExisting,
-			AlwaysNew:      o.alwaysNew,
-			NonInteractive: o.nonInteractive,
-			Choose:         tui.Select,
-		})
-		if err != nil {
-			return err
-		}
-		// A work branch is never the repo's default branch (see newcmd). An
-		// undeterminable default warns rather than refusing; teardown
-		// re-checks before it deletes anything.
-		if problem, perr := repo.DefaultBranchProblem(main, choice.Branch); perr != nil {
-			fmt.Fprintf(os.Stderr, "git-work: warning: %s: could not determine the default branch: %v\n", name, perr)
-		} else if problem != "" {
-			return fmt.Errorf("%s: %s", name, problem)
-		}
-		wt := filepath.Join(workDir, name)
-		if err := choice.Checkout(main, wt); err != nil {
-			return err
-		}
-		st.Repos = append(st.Repos, state.Repo{Name: name, BranchSource: choice.Source, Branch: choice.Branch})
-		added = append(added, name)
+		st.Repos = append(st.Repos, state.Repo{Name: p.Name, BranchSource: p.Choice.Source, Branch: p.Choice.Branch})
+		added = append(added, p.Name)
 	}
 	if err := st.Save(workDir); err != nil {
 		return err

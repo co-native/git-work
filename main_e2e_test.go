@@ -139,32 +139,61 @@ func gwRun(t *testing.T, bin, dir string, env []string, args ...string) (string,
 	return string(out), err
 }
 
+// Non-interactive new never adopts a ticket-matching branch on its own: one
+// candidate or several, local or on origin, it refuses with the full list
+// across every repo and creates nothing. --branch is the scripted answer,
+// reusing the branch where it exists and creating it where it does not.
 func TestNewNonInteractiveAmbiguousBranches(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
-	origin := makeOriginIn(t, home, "alpha")
-	if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
-		t.Fatalf("clone: %v\n%s", err, out)
+	for _, name := range []string{"alpha", "beta"} {
+		origin := makeOriginIn(t, home, name)
+		if out, err := gwRun(t, bin, home, env, "clone", origin, name); err != nil {
+			t.Fatalf("clone %s: %v\n%s", name, err, out)
+		}
 	}
-	main := filepath.Join(reposRoot, "alpha", "main")
-	sh(t, main, "git", "branch", "PROJ-9-old")
-	sh(t, main, "git", "branch", "feature/PROJ-9")
+	// alpha: one local candidate plus one that exists only on origin
+	sh(t, filepath.Join(reposRoot, "alpha", "main"), "git", "branch", "PROJ-9-old")
+	sh(t, filepath.Join(home, "seed-alpha"), "git", "push", "-q", "origin", "HEAD:refs/heads/feature/PROJ-9")
+	// beta: a single local candidate
+	sh(t, filepath.Join(reposRoot, "beta", "main"), "git", "branch", "PROJ-9-beta")
 
-	out, err := gwRun(t, bin, home, env, "new", "PROJ-9", "--repos", "alpha", "--non-interactive")
+	out, err := gwRun(t, bin, home, env, "new", "PROJ-9", "--repos", "alpha,beta", "--non-interactive")
 	if err == nil {
-		t.Fatalf("expected new to fail with multiple matching branches, got:\n%s", out)
+		t.Fatalf("expected new to refuse with matching branches, got:\n%s", out)
 	}
-	if !strings.Contains(out, "PROJ-9-old") || !strings.Contains(out, "feature/PROJ-9") {
-		t.Errorf("error should list both matching branches, got:\n%s", out)
+	for _, want := range []string{"PROJ-9-old", "origin/feature/PROJ-9", "PROJ-9-beta", "--branch"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal should mention %q, got:\n%s", want, out)
+		}
 	}
-
-	// Rollback: the failed new must leave no partial work folder behind,
-	// whatever name it would have used.
+	// Nothing was created: the refusal came before the folder existed.
 	entries, err := os.ReadDir(workRoot)
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read work root: %v", err)
 	}
 	for _, e := range entries {
-		t.Errorf("expected work root to be empty after failed new, found %s", e.Name())
+		t.Errorf("expected work root to be empty after the refusal, found %s", e.Name())
+	}
+
+	// --branch answers for both repos: alpha reuses origin's branch as a
+	// tracking branch, beta creates it.
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-9", "--repos", "alpha,beta", "--branch", "feature/PROJ-9", "--non-interactive"); err != nil {
+		t.Fatalf("new --branch: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-9-proj-9")
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"alpha": "existing", "beta": "new"}
+	for _, r := range st.Repos {
+		if r.Branch != "feature/PROJ-9" || r.BranchSource != want[r.Name] {
+			t.Errorf("state %s = %+v, want feature/PROJ-9 as %s", r.Name, r, want[r.Name])
+		}
+	}
+	up := shOut(t, filepath.Join(workDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "@{upstream}")
+	if strings.TrimSpace(up) != "origin/feature/PROJ-9" {
+		t.Errorf("alpha upstream = %q, want origin/feature/PROJ-9", strings.TrimSpace(up))
 	}
 }
 
@@ -280,6 +309,8 @@ func TestAddReusesExistingBranch(t *testing.T) {
 	}
 }
 
+// add refuses a ticket-matching branch non-interactively, creating no
+// worktree and leaving state untouched; --branch then reuses it.
 func TestAddReusesTicketMatchedBranch(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	for _, name := range []string{"alpha", "beta"} {
@@ -297,8 +328,19 @@ func TestAddReusesTicketMatchedBranch(t *testing.T) {
 	}
 	workDir := filepath.Join(workRoot, "PROJ-4-proj-4")
 
-	if out, err := gwRun(t, bin, workDir, env, "add", "--repos", "beta", "--non-interactive"); err != nil {
-		t.Fatalf("add: %v\n%s", err, out)
+	out, err := gwRun(t, bin, workDir, env, "add", "--repos", "beta", "--non-interactive")
+	if err == nil || !strings.Contains(out, "feature/PROJ-4") || !strings.Contains(out, "--branch") {
+		t.Fatalf("add should refuse, naming feature/PROJ-4 and --branch; err = %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "beta")); !os.IsNotExist(err) {
+		t.Errorf("refused add must not create the beta worktree (stat err = %v)", err)
+	}
+	if st, err := state.Load(workDir); err != nil || len(st.Repos) != 1 {
+		t.Errorf("refused add must leave state untouched: repos = %+v, err = %v", st.Repos, err)
+	}
+
+	if out, err := gwRun(t, bin, workDir, env, "add", "--repos", "beta", "--branch", "feature/PROJ-4", "--non-interactive"); err != nil {
+		t.Fatalf("add --branch: %v\n%s", err, out)
 	}
 	head := shOut(t, filepath.Join(workDir, "beta"), "git", "rev-parse", "--abbrev-ref", "HEAD")
 	if strings.TrimSpace(head) != "feature/PROJ-4" {

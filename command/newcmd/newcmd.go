@@ -26,8 +26,6 @@ type options struct {
 	dir            string
 	branch         string
 	noTicket       bool
-	reuseExisting  bool
-	alwaysNew      bool
 	nonInteractive bool
 }
 
@@ -47,21 +45,21 @@ var Cmd = &cli.Command{
 		"(and branch) per repo, and writes the generated files. Any failure after the\n" +
 		"folder exists rolls back - added worktrees are removed and the folder deleted.\n" +
 		"With -n/--no-ticket the argument is a plain name instead: no provider lookup\n" +
-		"and no TICKET.md, with folder and branch named from its slug. Flags may come\n" +
-		"before or after the positional argument.",
+		"and no TICKET.md, with folder and branch named from its slug. Existing branches\n" +
+		"for the ticket, local or on origin, are offered for reuse; --branch names the\n" +
+		"branch outright instead. Flags may come before or after the positional argument.",
 	Examples: []string{
 		"git work new PROJ-123 --repos api,web",
+		"git work new PROJ-123 --repos api --branch feature/PROJ-123 --non-interactive",
 		"git work new -n spike-harness --repos api --non-interactive",
 	},
 	Flags: []cli.Flag{
 		{Long: "repos", Arg: "<a,b,c>", Desc: "comma-separated repo names; skips the interactive multi-select"},
 		{Long: "description", Arg: "<slug>", Desc: "override the slug otherwise derived from the ticket title"},
 		{Long: "dir", Arg: "<name>", Desc: "override the work folder name (default <ticket>-<slug>)"},
-		{Long: "branch", Arg: "<name>", Desc: "override the branch name (default <ticket>-<slug>, cased independently)"},
+		{Long: "branch", Arg: "<name>", Desc: "this exact branch, reused if it exists or created; skips ticket matching (default <ticket>-<slug>)"},
 		{Short: "n", Long: "no-ticket", Desc: "ticketless: the argument is a plain name, no provider lookup and no TICKET.md"},
-		{Long: "reuse-existing", Desc: "reuse a matching existing branch without prompting"},
-		{Long: "always-new", Desc: "always create a new branch without prompting"},
-		{Long: "non-interactive", Desc: "never prompt; use --repos, or the add_by_default repos"},
+		{Long: "non-interactive", Desc: "never prompt; use --repos or the add_by_default repos, fail if ticket branches exist"},
 	},
 }
 
@@ -78,8 +76,6 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.StringVar(&o.branch, "branch", "", "branch name override")
 	fs.BoolVar(&o.noTicket, "no-ticket", false, "ticketless: the argument is a plain name (no provider lookup, no TICKET.md)")
 	fs.BoolVar(&o.noTicket, "n", false, "shorthand for --no-ticket")
-	fs.BoolVar(&o.reuseExisting, "reuse-existing", false, "reuse an existing ticket branch without prompting")
-	fs.BoolVar(&o.alwaysNew, "always-new", false, "always create a new branch without prompting")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of prompting")
 	return fs
 }
@@ -124,6 +120,9 @@ func parseFlags(args []string) (*options, error) {
 				o.repos = append(o.repos, r)
 			}
 		}
+	}
+	if err := repo.CheckBranchArg(o.branch); err != nil {
+		return nil, cli.Usagef("%v", err)
 	}
 	return o, nil
 }
@@ -271,6 +270,28 @@ func run(args []string) error {
 	if _, err := os.Stat(workDir); err == nil {
 		return fmt.Errorf("work folder already exists: %s", workDir)
 	}
+
+	// Existing branches are matched against the ticket id; ticketless work
+	// has none, so its name-derived slug (the default branch name) stands in.
+	matchID := o.ticketID
+	if o.noTicket {
+		matchID = slug
+	}
+	// Every repo resolves before anything is created: a refusal reports all
+	// repos at once and leaves nothing to roll back.
+	plan, err := repo.ResolveWorkBranches(o.repos, matchID, branch, repo.PlanOpts{
+		ResolveOpts: repo.ResolveOpts{
+			Explicit:       o.branch != "",
+			NonInteractive: o.nonInteractive,
+			Choose:         tui.Select,
+		},
+		MainOf: l.RepoMain,
+		Warn:   warn,
+	})
+	if err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return err
 	}
@@ -294,45 +315,11 @@ func run(args []string) error {
 	}()
 
 	st := &state.State{TicketID: displayID, Title: title, Slug: slug, Branch: branch, Provider: providerName, NoTicket: o.noTicket}
-
-	// Existing branches are matched against the ticket id; ticketless work
-	// has none, so its name-derived slug (the default branch name) stands in.
-	matchID := o.ticketID
-	if o.noTicket {
-		matchID = slug
-	}
-
-	for _, name := range o.repos {
-		main, err := l.RepoMain(name)
-		if err != nil {
+	for _, p := range plan {
+		if err := p.Choice.Checkout(p.Main, l.Worktree(dirName, p.Name)); err != nil {
 			return err
 		}
-		if err := repo.Fetch(main); err != nil {
-			fmt.Fprintf(os.Stderr, "git-work: fetch %s: %v (continuing with local refs)\n", name, err)
-		}
-		choice, err := repo.ResolveWorkBranch(main, name, matchID, branch, repo.ResolveOpts{
-			ReuseExisting:  o.reuseExisting,
-			AlwaysNew:      o.alwaysNew,
-			NonInteractive: o.nonInteractive,
-			Choose:         tui.Select,
-		})
-		if err != nil {
-			return err
-		}
-		// A work branch is never the repo's default branch. Reachable via
-		// --branch, or a reused branch whose name matches the ticket id. An
-		// undeterminable default is a warning, not a refusal: nothing is
-		// destroyed by recording it, and teardown re-checks before deleting.
-		if problem, perr := repo.DefaultBranchProblem(main, choice.Branch); perr != nil {
-			fmt.Fprintf(os.Stderr, "git-work: warning: %s: could not determine the default branch: %v\n", name, perr)
-		} else if problem != "" {
-			return fmt.Errorf("%s: %s", name, problem)
-		}
-		wt := l.Worktree(dirName, name)
-		if err := choice.Checkout(main, wt); err != nil {
-			return err
-		}
-		rec := state.Repo{Name: name, BranchSource: choice.Source, Branch: choice.Branch}
+		rec := state.Repo{Name: p.Name, BranchSource: p.Choice.Source, Branch: p.Choice.Branch}
 		st.Repos = append(st.Repos, rec)
 		added = append(added, rec)
 	}
@@ -346,6 +333,11 @@ func run(args []string) error {
 	success = true
 	fmt.Printf("Created work folder %s with %d repo(s)\n", workDir, len(st.Repos))
 	return nil
+}
+
+// warn prints a non-fatal notice in git-work's stderr format.
+func warn(msg string) {
+	fmt.Fprintf(os.Stderr, "git-work: %s\n", msg)
 }
 
 // writeFiles writes TICKET/README/CLAUDE managed blocks for the work folder.
