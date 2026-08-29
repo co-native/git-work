@@ -204,7 +204,7 @@ func run(args []string) error {
 			return fmt.Errorf("%s: %s", name, problem)
 		}
 		wt := filepath.Join(workDir, name)
-		if err := repo.AddWorktree(main, wt, choice.Branch, "", choice.Create); err != nil {
+		if err := choice.Checkout(main, wt); err != nil {
 			return err
 		}
 		st.Repos = append(st.Repos, state.Repo{Name: name, BranchSource: choice.Source, Branch: choice.Branch})

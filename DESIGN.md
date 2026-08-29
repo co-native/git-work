@@ -783,7 +783,11 @@ only after `git work refresh`.
 ## Branch resolution
 
 When `new`/`add` includes a repo, `repo.ResolveWorkBranch` decides whether to create the
-work branch or reuse an existing one. Matching is boundary-aware so `PROJ-123` matches
+work branch or reuse an existing one. A branch already carrying the intended name is
+always reused, whether it exists locally or only on origin (after the pre-resolution
+fetch): the remote case is checked out as a local branch tracking `origin/<branch>`
+(`repo.AddTrackingWorktree`), since cutting a second branch of that name from `main` would
+only defer the collision to `push`. Matching is boundary-aware so `PROJ-123` matches
 `feature/PROJ-123` but not `PROJ-1234`. Behavior is controlled by `--reuse-existing` /
 `--always-new`; in `--non-interactive` mode an ambiguous match (multiple candidates, no
 flag) is a hard error rather than a prompt.

@@ -248,6 +248,19 @@ func AddWorktree(mainDir, path, branch, startPoint string, create bool) error {
 	return err
 }
 
+// AddTrackingWorktree adds a worktree at path on a new local branch that
+// tracks origin/<branch>, for a branch that exists on origin but not locally.
+// The start point and --track are explicit rather than relying on git's
+// own remote-branch guess, so the outcome does not depend on how many
+// remotes the clone has or on checkout.guess.
+func AddTrackingWorktree(mainDir, path, branch string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	_, err := git(mainDir, "worktree", "add", "--track", "-b", branch, path, "origin/"+branch)
+	return err
+}
+
 // Worktree is one entry of `git worktree list`: the checkout path and its
 // branch (short name; empty when the HEAD is detached).
 type Worktree struct {

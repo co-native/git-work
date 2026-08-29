@@ -168,6 +168,49 @@ func TestNewNonInteractiveAmbiguousBranches(t *testing.T) {
 	}
 }
 
+// A branch that already exists on origin (pushed from another machine, or a
+// folder torn down after pushing) is checked out from there, not shadowed by
+// a new branch of the same name cut from main.
+func TestNewChecksOutRemoteOnlyBranch(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	// Push feat-x, one commit ahead of main, from the seed clone only.
+	seed := filepath.Join(home, "seed-alpha")
+	sh(t, seed, "git", "checkout", "-qb", "feat-x")
+	sh(t, seed, "git", "commit", "-q", "--allow-empty", "-m", "feat-x work")
+	sh(t, seed, "git", "push", "-q", "origin", "feat-x")
+	want := strings.TrimSpace(shOut(t, seed, "git", "rev-parse", "HEAD"))
+	main := filepath.Join(reposRoot, "alpha", "main")
+	if out, err := exec.Command("git", "-C", main, "show-ref", "--verify", "-q", "refs/heads/feat-x").CombinedOutput(); err == nil {
+		t.Fatalf("fixture: feat-x must not exist locally in the primary\n%s", out)
+	}
+
+	if out, err := gwRun(t, bin, home, env, "new", "-n", "feat-x", "--repos", "alpha", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "feat-x")
+	wt := filepath.Join(workDir, "alpha")
+	if got := strings.TrimSpace(shOut(t, wt, "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "feat-x" {
+		t.Errorf("worktree branch = %q, want feat-x", got)
+	}
+	if got := strings.TrimSpace(shOut(t, wt, "git", "rev-parse", "HEAD")); got != want {
+		t.Errorf("worktree tip = %s, want origin/feat-x's %s (a fresh branch from main)", got, want)
+	}
+	if got := strings.TrimSpace(shOut(t, wt, "git", "rev-parse", "--abbrev-ref", "@{upstream}")); got != "origin/feat-x" {
+		t.Errorf("upstream = %q, want origin/feat-x", got)
+	}
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Repos) != 1 || st.Repos[0].Branch != "feat-x" || st.Repos[0].BranchSource != "existing" {
+		t.Errorf("state repos = %+v, want feat-x recorded as existing", st.Repos)
+	}
+}
+
 func TestRefreshAndAdd(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")

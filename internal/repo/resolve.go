@@ -17,19 +17,45 @@ type ResolveOpts struct {
 	Choose func(title string, options []string) (string, error)
 }
 
+// CheckoutMode says how a worktree obtains its branch. The zero value is
+// the local checkout, which fails rather than creates when the branch is
+// missing - the safe default for an unset choice.
+type CheckoutMode int
+
+const (
+	CheckoutLocal  CheckoutMode = iota // check out the existing local Branch
+	CheckoutRemote                     // create Branch tracking origin/Branch, which exists only there
+	CheckoutNew                        // create Branch from the primary's HEAD
+)
+
 // BranchChoice is the outcome of ResolveWorkBranch.
 type BranchChoice struct {
-	Create bool   // true: create Branch with -b; false: check out existing Branch
+	Mode   CheckoutMode
 	Branch string // the branch to create or reuse
 	Source string // "new" | "existing" (recorded as state.Repo.BranchSource)
+}
+
+// Checkout adds a worktree at path on the chosen branch, obtaining the
+// branch the way Mode says.
+func (c BranchChoice) Checkout(mainDir, path string) error {
+	switch c.Mode {
+	case CheckoutRemote:
+		return AddTrackingWorktree(mainDir, path, c.Branch)
+	case CheckoutNew:
+		return AddWorktree(mainDir, path, c.Branch, "", true)
+	default:
+		return AddWorktree(mainDir, path, c.Branch, "", false)
+	}
 }
 
 // ResolveWorkBranch decides whether to create branch anew in mainDir or
 // reuse an existing branch matching ticketID. name is the repo's display
 // name, used in prompts and errors.
 //
-//   - If branch itself already exists it is always reused - creating it
-//     would fail - even under AlwaysNew.
+//   - If branch itself already exists it is always reused, even under
+//     AlwaysNew: locally, because creating it would fail; on origin only,
+//     because a second branch of that name would be rejected at push time.
+//     The remote case checks out a local branch tracking origin/<branch>.
 //   - AlwaysNew skips ticket matching and creates branch.
 //   - No ticket matches: create branch.
 //   - One match: reused when ReuseExisting or NonInteractive; otherwise the
@@ -42,24 +68,31 @@ func ResolveWorkBranch(mainDir, name, ticketID, branch string, opts ResolveOpts)
 		return BranchChoice{}, err
 	}
 	if exists {
-		return BranchChoice{Create: false, Branch: branch, Source: "existing"}, nil
+		return BranchChoice{Mode: CheckoutLocal, Branch: branch, Source: "existing"}, nil
+	}
+	remote, err := RemoteBranchExists(mainDir, branch)
+	if err != nil {
+		return BranchChoice{}, err
+	}
+	if remote {
+		return BranchChoice{Mode: CheckoutRemote, Branch: branch, Source: "existing"}, nil
 	}
 	if opts.AlwaysNew {
-		return BranchChoice{Create: true, Branch: branch, Source: "new"}, nil
+		return BranchChoice{Mode: CheckoutNew, Branch: branch, Source: "new"}, nil
 	}
 	matches, err := BranchesMatching(mainDir, ticketID)
 	if err != nil {
 		return BranchChoice{}, err
 	}
 	if len(matches) == 0 {
-		return BranchChoice{Create: true, Branch: branch, Source: "new"}, nil
+		return BranchChoice{Mode: CheckoutNew, Branch: branch, Source: "new"}, nil
 	}
 	if len(matches) > 1 && (opts.NonInteractive || opts.ReuseExisting) {
 		return BranchChoice{}, fmt.Errorf("%s: multiple branches match %s:\n  %s\nre-run interactively to pick one, or pass --always-new",
 			name, ticketID, strings.Join(matches, "\n  "))
 	}
 	if opts.ReuseExisting || opts.NonInteractive {
-		return BranchChoice{Create: false, Branch: matches[0], Source: "existing"}, nil
+		return BranchChoice{Mode: CheckoutLocal, Branch: matches[0], Source: "existing"}, nil
 	}
 	createOpt := "(create new: " + branch + ")"
 	choice, err := opts.Choose(
@@ -69,7 +102,7 @@ func ResolveWorkBranch(mainDir, name, ticketID, branch string, opts ResolveOpts)
 		return BranchChoice{}, err
 	}
 	if choice == createOpt {
-		return BranchChoice{Create: true, Branch: branch, Source: "new"}, nil
+		return BranchChoice{Mode: CheckoutNew, Branch: branch, Source: "new"}, nil
 	}
-	return BranchChoice{Create: false, Branch: choice, Source: "existing"}, nil
+	return BranchChoice{Mode: CheckoutLocal, Branch: choice, Source: "existing"}, nil
 }

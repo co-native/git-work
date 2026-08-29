@@ -1066,3 +1066,36 @@ func TestDefaultBranchProblem(t *testing.T) {
 		t.Errorf(`DefaultBranchProblem(PROJ-1-work) = %q, %v; want "", nil`, problem, err)
 	}
 }
+
+// AddTrackingWorktree checks out a branch that exists only on origin: the
+// worktree sits at origin's tip on a local branch tracking origin/<branch>.
+func TestAddTrackingWorktree(t *testing.T) {
+	origin := makeOrigin(t)
+	repoDir := filepath.Join(t.TempDir(), "myrepo")
+	if err := Clone(origin, repoDir, nil); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(repoDir, "main")
+	seed := cloneWorkdir(t, origin)
+	run(t, seed, "git", "checkout", "-qb", "PROJ-1-fix")
+	run(t, seed, "git", "commit", "-q", "--allow-empty", "-m", "remote work")
+	run(t, seed, "git", "push", "-q", "origin", "PROJ-1-fix")
+	want := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
+	if err := Fetch(main); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(repoDir, "wt")
+	if err := AddTrackingWorktree(main, wt, "PROJ-1-fix"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(run(t, wt, "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-1-fix" {
+		t.Errorf("worktree branch = %q, want PROJ-1-fix", got)
+	}
+	if got := strings.TrimSpace(run(t, wt, "git", "rev-parse", "HEAD")); got != want {
+		t.Errorf("worktree tip = %s, want origin's %s", got, want)
+	}
+	if got := strings.TrimSpace(run(t, wt, "git", "rev-parse", "--abbrev-ref", "@{upstream}")); got != "origin/PROJ-1-fix" {
+		t.Errorf("upstream = %q, want origin/PROJ-1-fix", got)
+	}
+}
