@@ -28,6 +28,8 @@ make fmt         # deno fmt (markdown, 90 cols) + gofmt
 make fmt-check   # both, without rewriting
 ```
 
+`make` alone lists every target.
+
 Tests shell out to real git and are hermetic: they need no git identity and no global git
 config, so they pass on a bare CI runner. Single package or test:
 `go test ./internal/repo -run TestIsDefaultBranch`.

@@ -35,8 +35,8 @@ make test     # go test ./...
 go vet ./...
 ```
 
-CI runs the same things on Linux, macOS and Windows. `make fmt-check` is the non-writing
-version if you want to see what `fmt` would change.
+`make` alone lists every target. CI runs the same things on Linux, macOS and Windows.
+`make fmt-check` is the non-writing version if you want to see what `fmt` would change.
 
 Include the output of `git work version` in a bug report.
 
