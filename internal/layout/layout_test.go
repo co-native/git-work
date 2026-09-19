@@ -18,9 +18,6 @@ func TestPaths(t *testing.T) {
 	if got, want := l.RepoDir("myrepo"), filepath.Join(repos, "myrepo"); got != want {
 		t.Errorf("RepoDir = %q; want %q", got, want)
 	}
-	if got, want := l.RepoOverlay("myrepo"), filepath.Join(repos, "myrepo", "CLAUDE.md"); got != want {
-		t.Errorf("RepoOverlay = %q; want %q", got, want)
-	}
 	if got, want := l.WorkDir("PROJ-1-foo"), filepath.Join(work, "PROJ-1-foo"); got != want {
 		t.Errorf("WorkDir = %q; want %q", got, want)
 	}

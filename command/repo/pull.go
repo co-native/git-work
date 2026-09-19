@@ -29,11 +29,7 @@ func runPull(args []string) error {
 	if len(args) > 0 {
 		return cli.Usagef("repo pull takes no arguments")
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
+	_, l, err := config.LoadLayout()
 	if err != nil {
 		return err
 	}
@@ -57,19 +53,7 @@ func pullAll(w io.Writer, l layout.Layout, names []string) error {
 	}
 	var failed []string
 	for _, name := range names {
-		main, err := l.RepoMain(name)
-		if err != nil {
-			fmt.Fprintf(w, "%s: %v\n", name, err)
-			failed = append(failed, name)
-			continue
-		}
-		def, err := gitrepo.DefaultBranchName(main)
-		if err != nil {
-			fmt.Fprintf(w, "%s: %v\n", name, err)
-			failed = append(failed, name)
-			continue
-		}
-		res, err := gitrepo.PullBranchFFOnly(main, def)
+		res, err := pullPrimary(l, name)
 		if err != nil {
 			fmt.Fprintf(w, "%s: %v\n", name, err)
 			failed = append(failed, name)
@@ -81,4 +65,13 @@ func pullAll(w io.Writer, l layout.Layout, names []string) error {
 		return fmt.Errorf("pull failed for: %s", strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// pullPrimary freshens one repo's default branch in its primary clone.
+func pullPrimary(l layout.Layout, name string) (gitrepo.PullResult, error) {
+	main, err := l.RepoMain(name)
+	if err != nil {
+		return gitrepo.PullUpToDate, err
+	}
+	return gitrepo.PullDefaultBranch(main)
 }

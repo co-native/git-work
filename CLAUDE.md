@@ -14,8 +14,9 @@ the invariants; when the two disagree, `DESIGN.md` wins.
   also reachable as `repos`; top-level `clone` is an alias for `repo clone`.
   `command/repo` imports `internal/repo` as `gitrepo`, and `main.go` imports it as
   `repocmd` - the same two-sided aliasing `command/config` uses against `internal/config`.
-- `internal/` - config, state, layout, repo (git plumbing), provider, template, tui,
-  teardown (shared `done`/`rm` logic), cli (the help and exit-code contract).
+- `internal/` - config, state, fileio (their shared file conventions), layout, repo (git
+  plumbing), provider, template, tui, teardown (shared `done`/`rm` logic), workfolder (the
+  in-work-folder command preamble and scope), cli (the help and exit-code contract).
 
 `DESIGN.md`'s Architecture table says what each package owns.
 

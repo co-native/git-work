@@ -9,127 +9,204 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// getKey returns the printable value for a dot-path key.
-func getKey(c *cfg.Config, key string) (string, error) {
-	seg := strings.Split(key, ".")
-	switch seg[0] {
-	case "paths":
-		if len(seg) != 2 {
-			return "", fmt.Errorf("unknown key %q", key)
-		}
-		switch seg[1] {
-		case "repos":
-			return c.Paths.Repos, nil
-		case "work":
-			return c.Paths.Work, nil
-		}
-		return "", fmt.Errorf("unknown key %q", key)
-	case "defaults":
-		if len(seg) != 2 {
-			return "", fmt.Errorf("unknown key %q", key)
-		}
-		switch seg[1] {
-		case "integration":
-			return c.Defaults.Integration, nil
-		}
-		return "", fmt.Errorf("unknown key %q", key)
-	case "repos":
-		if len(seg) < 2 {
-			return "", fmt.Errorf("unknown key %q", key)
-		}
-		r, ok := c.Repos[seg[1]]
-		if !ok {
-			return "", fmt.Errorf("no repo config for %q", seg[1])
-		}
-		if len(seg) == 2 {
-			// The whole entry as YAML, mirroring `providers.<name>`.
-			out, err := yaml.Marshal(r)
-			return string(out), err
-		}
-		switch seg[2] {
-		case "integration":
-			return r.Integration, nil
-		case "add_by_default":
-			return strconv.FormatBool(r.AddByDefault), nil
-		}
-		return "", fmt.Errorf("unknown key %q", key)
-	case "providers":
-		if len(seg) < 2 {
-			return "", fmt.Errorf("unknown key %q", key)
-		}
-		p := findProvider(c, seg[1])
-		if p == nil {
-			return "", fmt.Errorf("no provider %q", seg[1])
-		}
-		if len(seg) == 2 {
-			// Marshal the whole provider as YAML and return it.
-			out, err := yaml.Marshal(p)
-			return string(out), err
-		}
-		switch seg[2] {
-		case "type":
-			return p.Type, nil
-		case "default":
-			return strconv.FormatBool(p.Default), nil
-		case "folder_case":
-			return p.FolderCase, nil
-		case "branch_case":
-			return p.BranchCase, nil
-		case "patterns":
+// scalar is one fixed dot-path key: how `get`, `set` and `unset` act on it.
+// Every scalar takes exactly one value.
+type scalar struct {
+	get   func(*cfg.Config) string
+	set   func(*cfg.Config, string) error
+	unset func(*cfg.Config)
+}
+
+// scalars are the keys with a fixed name; `repos.<name>.*` and
+// `providers.<name>.*` are addressed by entry and live in the field tables.
+var scalars = map[string]scalar{
+	"paths.repos": {
+		get:   func(c *cfg.Config) string { return c.Paths.Repos },
+		set:   func(c *cfg.Config, v string) error { c.Paths.Repos = v; return nil },
+		unset: func(c *cfg.Config) { c.Paths.Repos = cfg.Default().Paths.Repos },
+	},
+	"paths.work": {
+		get:   func(c *cfg.Config) string { return c.Paths.Work },
+		set:   func(c *cfg.Config, v string) error { c.Paths.Work = v; return nil },
+		unset: func(c *cfg.Config) { c.Paths.Work = cfg.Default().Paths.Work },
+	},
+	"defaults.integration": {
+		get: func(c *cfg.Config) string { return c.Defaults.Integration },
+		set: func(c *cfg.Config, v string) error {
+			if err := checkRoute(v); err != nil {
+				return err
+			}
+			c.Defaults.Integration = v
+			return nil
+		},
+		unset: func(c *cfg.Config) { c.Defaults.Integration = "" },
+	},
+}
+
+// field is one key under a named entry (`repos.<name>.<field>`,
+// `providers.<name>.<field>`). set receives the whole config as well as the
+// entry, for the one field whose value constrains other entries. multi marks
+// a field that takes any number of values; every other field takes one.
+type field[T any] struct {
+	multi bool
+	get   func(*T) string
+	set   func(*cfg.Config, *T, []string) error
+	unset func(*T)
+}
+
+var repoFields = map[string]field[cfg.RepoConfig]{
+	"integration": {
+		get: func(r *cfg.RepoConfig) string { return r.Integration },
+		set: func(_ *cfg.Config, r *cfg.RepoConfig, v []string) error {
+			if err := checkRoute(v[0]); err != nil {
+				return err
+			}
+			r.Integration = v[0]
+			return nil
+		},
+		unset: func(r *cfg.RepoConfig) { r.Integration = "" },
+	},
+	"add_by_default": {
+		get: func(r *cfg.RepoConfig) string { return strconv.FormatBool(r.AddByDefault) },
+		set: func(_ *cfg.Config, r *cfg.RepoConfig, v []string) error {
+			b, err := strconv.ParseBool(v[0])
+			if err != nil {
+				return fmt.Errorf("add_by_default must be true or false: %w", err)
+			}
+			r.AddByDefault = b
+			return nil
+		},
+		unset: func(r *cfg.RepoConfig) { r.AddByDefault = false },
+	},
+}
+
+var providerFields = map[string]field[cfg.Provider]{
+	"type": {
+		get:   func(p *cfg.Provider) string { return p.Type },
+		set:   func(_ *cfg.Config, p *cfg.Provider, v []string) error { p.Type = v[0]; return nil },
+		unset: func(p *cfg.Provider) { p.Type = "" },
+	},
+	"default": {
+		get: func(p *cfg.Provider) string { return strconv.FormatBool(p.Default) },
+		set: func(c *cfg.Config, p *cfg.Provider, v []string) error {
+			b, err := strconv.ParseBool(v[0])
+			if err != nil {
+				return fmt.Errorf("default must be true or false: %w", err)
+			}
+			// At most one provider is the default.
+			if b {
+				for i := range c.Providers {
+					c.Providers[i].Default = false
+				}
+			}
+			p.Default = b
+			return nil
+		},
+		unset: func(p *cfg.Provider) { p.Default = false },
+	},
+	"folder_case": {
+		get:   func(p *cfg.Provider) string { return p.FolderCase },
+		set:   func(_ *cfg.Config, p *cfg.Provider, v []string) error { p.FolderCase = v[0]; return nil },
+		unset: func(p *cfg.Provider) { p.FolderCase = "" },
+	},
+	"branch_case": {
+		get:   func(p *cfg.Provider) string { return p.BranchCase },
+		set:   func(_ *cfg.Config, p *cfg.Provider, v []string) error { p.BranchCase = v[0]; return nil },
+		unset: func(p *cfg.Provider) { p.BranchCase = "" },
+	},
+	"patterns": {
+		multi: true,
+		get: func(p *cfg.Provider) string {
 			var lines []string
 			for _, pat := range p.Patterns {
 				lines = append(lines, patternString(pat))
 			}
-			return strings.Join(lines, "\n"), nil
-		}
-		return "", fmt.Errorf("unknown key %q", key)
-	}
-	return "", fmt.Errorf("unknown key %q", key)
+			return strings.Join(lines, "\n")
+		},
+		set: func(_ *cfg.Config, p *cfg.Provider, v []string) error {
+			var pats []cfg.Pattern
+			for _, entry := range v {
+				pats = append(pats, parsePatternEntry(entry))
+			}
+			p.Patterns = pats
+			return nil
+		},
+		unset: func(p *cfg.Provider) { p.Patterns = nil },
+	},
 }
 
-// setKey applies values to a dot-path key.
-func setKey(c *cfg.Config, key string, values []string) error {
-	seg := strings.Split(key, ".")
-	switch seg[0] {
-	case "paths":
-		if len(seg) != 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		if len(values) != 1 {
-			return fmt.Errorf("key %q takes exactly one value", key)
-		}
-		switch seg[1] {
-		case "repos":
-			c.Paths.Repos = values[0]
-		case "work":
-			c.Paths.Work = values[0]
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
-		return nil
-	case "defaults":
-		if len(seg) != 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		if len(values) != 1 {
-			return fmt.Errorf("key %q takes exactly one value", key)
-		}
-		switch seg[1] {
-		case "integration":
-			if err := checkRoute(values[0]); err != nil {
-				return err
-			}
-			c.Defaults.Integration = values[0]
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
-		return nil
+// splitKey splits a dot-path key into its namespace ("repos"), the entry it
+// names, and the field under that entry; each is "" when absent.
+func splitKey(key string) (ns, name, field string) {
+	ns, rest, _ := strings.Cut(key, ".")
+	name, field, _ = strings.Cut(rest, ".")
+	return ns, name, field
+}
+
+func unknownKey(key string) error { return fmt.Errorf("unknown key %q", key) }
+
+func oneValue(key string) error { return fmt.Errorf("key %q takes exactly one value", key) }
+
+// getKey returns the printable value for a dot-path key. A bare entry
+// (`repos.<name>`, `providers.<name>`) prints as YAML.
+func getKey(c *cfg.Config, key string) (string, error) {
+	if s, ok := scalars[key]; ok {
+		return s.get(c), nil
+	}
+	ns, name, fld := splitKey(key)
+	if name == "" {
+		return "", unknownKey(key)
+	}
+	switch ns {
 	case "repos":
-		if len(seg) != 3 {
-			return fmt.Errorf("unknown key %q", key)
+		r, ok := c.Repos[name]
+		if !ok {
+			return "", fmt.Errorf("no repo config for %q", name)
+		}
+		if fld == "" {
+			out, err := yaml.Marshal(r)
+			return string(out), err
+		}
+		if f, ok := repoFields[fld]; ok {
+			return f.get(&r), nil
+		}
+	case "providers":
+		p := findProvider(c, name)
+		if p == nil {
+			return "", fmt.Errorf("no provider %q", name)
+		}
+		if fld == "" {
+			out, err := yaml.Marshal(p)
+			return string(out), err
+		}
+		if f, ok := providerFields[fld]; ok {
+			return f.get(p), nil
+		}
+	}
+	return "", unknownKey(key)
+}
+
+// setKey applies values to a dot-path key. A repo or provider entry that does
+// not exist yet is created.
+func setKey(c *cfg.Config, key string, values []string) error {
+	if s, ok := scalars[key]; ok {
+		if len(values) != 1 {
+			return oneValue(key)
+		}
+		return s.set(c, values[0])
+	}
+	ns, name, fld := splitKey(key)
+	if name == "" || fld == "" {
+		return unknownKey(key)
+	}
+	switch ns {
+	case "repos":
+		f, ok := repoFields[fld]
+		if !ok {
+			return fmt.Errorf("cannot set %q", key)
 		}
 		if len(values) != 1 {
-			return fmt.Errorf("key %q takes exactly one value", key)
+			return oneValue(key)
 		}
 		// Load leaves a nil map for a config with no `repos:` block, and
 		// assigning into a nil map panics rather than erroring.
@@ -137,168 +214,84 @@ func setKey(c *cfg.Config, key string, values []string) error {
 			c.Repos = map[string]cfg.RepoConfig{}
 		}
 		// Indexing a missing key yields the zero RepoConfig, so this is the
-		// auto-create path too - no append-then-take-a-pointer dance.
-		r := c.Repos[seg[1]]
-		switch seg[2] {
-		case "integration":
-			if err := checkRoute(values[0]); err != nil {
-				return err
-			}
-			r.Integration = values[0]
-		case "add_by_default":
-			b, err := strconv.ParseBool(values[0])
-			if err != nil {
-				return fmt.Errorf("add_by_default must be true or false: %w", err)
-			}
-			r.AddByDefault = b
-		default:
-			return fmt.Errorf("cannot set %q", key)
+		// auto-create path too; map elements are not addressable, so the
+		// mutation is written back.
+		r := c.Repos[name]
+		if err := f.set(c, &r, values); err != nil {
+			return err
 		}
-		// Map elements are not addressable, so the mutation is written back.
-		c.Repos[seg[1]] = r
+		c.Repos[name] = r
 		return nil
 	case "providers":
-		if len(seg) != 3 {
-			return fmt.Errorf("unknown key %q", key)
+		f, ok := providerFields[fld]
+		if !ok {
+			return fmt.Errorf("cannot set %q", key)
 		}
-		// Auto-create provider if missing.
-		p := findProvider(c, seg[1])
+		if !f.multi && len(values) != 1 {
+			return oneValue(key)
+		}
+		p := findProvider(c, name)
 		if p == nil {
-			c.Providers = append(c.Providers, cfg.Provider{Name: seg[1]})
+			c.Providers = append(c.Providers, cfg.Provider{Name: name})
 			p = &c.Providers[len(c.Providers)-1]
 		}
-		switch seg[2] {
-		case "type":
-			if len(values) != 1 {
-				return fmt.Errorf("key %q takes exactly one value", key)
-			}
-			p.Type = values[0]
-		case "default":
-			if len(values) != 1 {
-				return fmt.Errorf("key %q takes exactly one value", key)
-			}
-			b, err := strconv.ParseBool(values[0])
-			if err != nil {
-				return fmt.Errorf("default must be true or false: %w", err)
-			}
-			if b {
-				for i := range c.Providers {
-					c.Providers[i].Default = false
-				}
-			}
-			p.Default = b
-		case "folder_case":
-			if len(values) != 1 {
-				return fmt.Errorf("key %q takes exactly one value", key)
-			}
-			p.FolderCase = values[0]
-		case "branch_case":
-			if len(values) != 1 {
-				return fmt.Errorf("key %q takes exactly one value", key)
-			}
-			p.BranchCase = values[0]
-		case "patterns":
-			var pats []cfg.Pattern
-			for _, v := range values {
-				pats = append(pats, parsePatternEntry(v))
-			}
-			p.Patterns = pats
-		default:
-			return fmt.Errorf("cannot set %q", key)
-		}
-		return nil
+		return f.set(c, p, values)
 	}
-	return fmt.Errorf("unknown key %q", key)
+	return unknownKey(key)
 }
 
-// unsetKey clears a scalar (resetting required paths to default).
+// unsetKey clears a key: a scalar goes back to its default, an entry's field
+// to its zero value, and a bare entry (`repos.<name>`, `providers.<name>`) is
+// dropped entirely.
 func unsetKey(c *cfg.Config, key string) error {
-	seg := strings.Split(key, ".")
-	switch seg[0] {
-	case "paths":
-		if len(seg) != 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		d := cfg.Default()
-		switch seg[1] {
-		case "repos":
-			c.Paths.Repos = d.Paths.Repos
-		case "work":
-			c.Paths.Work = d.Paths.Work
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
-		return nil
-	case "defaults":
-		if len(seg) != 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		switch seg[1] {
-		case "integration":
-			c.Defaults.Integration = ""
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
-		return nil
-	case "repos":
-		if len(seg) < 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		r, ok := c.Repos[seg[1]]
-		if !ok {
-			return fmt.Errorf("no repo config for %q", seg[1])
-		}
-		if len(seg) == 2 {
-			// Drop the entry entirely, mirroring `unset providers.<name>`.
-			delete(c.Repos, seg[1])
-			return nil
-		}
-		switch seg[2] {
-		case "integration":
-			r.Integration = ""
-		case "add_by_default":
-			r.AddByDefault = false
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
-		c.Repos[seg[1]] = r
-		return nil
-	case "providers":
-		if len(seg) < 2 {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		p := findProvider(c, seg[1])
-		if p == nil {
-			return fmt.Errorf("no provider %q", seg[1])
-		}
-		if len(seg) == 2 {
-			// Drop the provider entirely.
-			var filtered []cfg.Provider
-			for _, pr := range c.Providers {
-				if pr.Name != seg[1] {
-					filtered = append(filtered, pr)
-				}
-			}
-			c.Providers = filtered
-			return nil
-		}
-		switch seg[2] {
-		case "type":
-			p.Type = ""
-		case "default":
-			p.Default = false
-		case "folder_case":
-			p.FolderCase = ""
-		case "branch_case":
-			p.BranchCase = ""
-		case "patterns":
-			p.Patterns = nil
-		default:
-			return fmt.Errorf("unknown key %q", key)
-		}
+	if s, ok := scalars[key]; ok {
+		s.unset(c)
 		return nil
 	}
-	return fmt.Errorf("unknown key %q", key)
+	ns, name, fld := splitKey(key)
+	if name == "" {
+		return unknownKey(key)
+	}
+	switch ns {
+	case "repos":
+		r, ok := c.Repos[name]
+		if !ok {
+			return fmt.Errorf("no repo config for %q", name)
+		}
+		if fld == "" {
+			delete(c.Repos, name)
+			return nil
+		}
+		f, ok := repoFields[fld]
+		if !ok {
+			return unknownKey(key)
+		}
+		f.unset(&r)
+		c.Repos[name] = r
+		return nil
+	case "providers":
+		p := findProvider(c, name)
+		if p == nil {
+			return fmt.Errorf("no provider %q", name)
+		}
+		if fld == "" {
+			var kept []cfg.Provider
+			for _, pr := range c.Providers {
+				if pr.Name != name {
+					kept = append(kept, pr)
+				}
+			}
+			c.Providers = kept
+			return nil
+		}
+		f, ok := providerFields[fld]
+		if !ok {
+			return unknownKey(key)
+		}
+		f.unset(p)
+		return nil
+	}
+	return unknownKey(key)
 }
 
 // checkRoute rejects an invalid `integration` value. The empty string means

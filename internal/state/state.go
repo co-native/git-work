@@ -1,14 +1,12 @@
 package state
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/co-native/git-work/internal/fileio"
 )
 
 // FileName is the per-work state file (YAML by default).
@@ -19,8 +17,11 @@ const JSONFileName = ".git-work.json"
 
 // Repo records one repo included in a work folder.
 type Repo struct {
-	Name         string `yaml:"name" json:"name"`
-	BranchSource string `yaml:"branch_source" json:"branch_source"` // "new" | "existing"
+	Name string `yaml:"name" json:"name"`
+	// BranchSource records whether new/add created the branch ("new") or
+	// reused one that existed ("existing"). No command reads it back; it is
+	// part of the state schema DESIGN.md documents, kept for the operator.
+	BranchSource string `yaml:"branch_source" json:"branch_source"`
 	// Branch is the branch actually checked out in this repo (the reused
 	// branch when new/add matched an existing one). State files written
 	// before this field existed omit it; Load falls back to the top-level
@@ -58,15 +59,11 @@ func (s *State) Save(workDir string) error {
 		s.CreatedAt = time.Now().UTC()
 	}
 	path := filepath.Join(workDir, FileName)
-	data, err := yaml.Marshal(s)
+	data, err := fileio.Marshal(path, s)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileio.WriteAtomic(path, data)
 }
 
 // Load reads the state file from workDir, accepting YAML or JSON. If the YAML
@@ -86,12 +83,7 @@ func readFile(path string) (*State, error) {
 		return nil, err
 	}
 	var s State
-	if strings.EqualFold(filepath.Ext(path), ".json") {
-		err = json.Unmarshal(data, &s)
-	} else {
-		err = yaml.Unmarshal(data, &s)
-	}
-	if err != nil {
+	if err := fileio.Unmarshal(path, data, &s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	// Migration: state files written before Repo.Branch existed carry only
@@ -105,6 +97,16 @@ func readFile(path string) (*State, error) {
 		}
 	}
 	return &s, nil
+}
+
+// Repo returns the named repo and whether the work folder holds it.
+func (s *State) Repo(name string) (Repo, bool) {
+	for _, r := range s.Repos {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return Repo{}, false
 }
 
 // RemoveRepo drops the named repo from s.Repos; returns whether it was

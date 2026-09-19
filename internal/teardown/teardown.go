@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/repo"
@@ -18,6 +19,21 @@ import (
 // behave. Force overrides safety-check problems (and force-deletes worktrees);
 // NoFetch skips the pre-merged-check fetch.
 type Options struct{ DeleteLocal, DeleteRemote, Force, NoFetch bool }
+
+// Gate decides whether a run proceeds past the problems its checks found: an
+// error naming them when force is unset, otherwise a note on stderr that the
+// run continues despite them. The wording says "most", because the
+// default-branch refusal is the one problem --force never overrides.
+func Gate(problems []string, force bool) error {
+	if len(problems) == 0 {
+		return nil
+	}
+	if !force {
+		return fmt.Errorf("aborting (most of these can be overridden with --force):\n  %s", strings.Join(problems, "\n  "))
+	}
+	fmt.Fprintf(os.Stderr, "git-work: proceeding despite %d problem(s) (--force)\n", len(problems))
+	return nil
+}
 
 // CheckRepo runs one repo's safety checks (uncommitted / unpushed /
 // merged-or-contained) and returns this repo's problems. An error while

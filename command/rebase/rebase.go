@@ -12,10 +12,10 @@ import (
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
-	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -52,10 +52,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers rebase's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("rebase", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("rebase")
 	fs.BoolVar(&o.all, "all", false, "rebase every repo in the work folder")
 	fs.BoolVar(&o.all, "a", false, "shorthand for --all")
 	fs.BoolVar(&o.noPull, "no-pull", false, "skip pulling the ticket repos' primary clones")
@@ -64,10 +61,8 @@ func newFlagSet(o *options) *flag.FlagSet {
 	return fs
 }
 
-// parseFlags parses `git work rebase` arguments. Every flag is boolean, so the
-// single positional <repo> may appear anywhere on the line; leading-dash
-// tokens are partitioned out as flags (this deliberately does NOT reject a
-// leading `-` first arg, so `rebase --all` parses). Bare `rebase` is a usage
+// parseFlags parses `git work rebase` arguments: the shared `<repo> | --all`
+// scope (see cli.ParseScope) plus rebase's own flags. Bare `rebase` is a usage
 // error rather than an implicit --all: scope is always explicit, the same rule
 // push and integrate follow.
 //
@@ -75,30 +70,9 @@ func newFlagSet(o *options) *flag.FlagSet {
 // here.
 func parseFlags(args []string) (*options, error) {
 	o := &options{}
-	fs := newFlagSet(o)
-
-	var flagArgs, positional []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a)
-		} else {
-			positional = append(positional, a)
-		}
-	}
-	if err := fs.Parse(flagArgs); err != nil {
-		return nil, cli.Usagef("%v", err)
-	}
-	if len(positional) > 1 {
-		return nil, cli.Usagef("give at most one <repo>")
-	}
-	switch {
-	case o.all && len(positional) == 1:
-		return nil, cli.Usagef("give a <repo> or --all, not both")
-	case !o.all && len(positional) == 0:
-		return nil, cli.Usagef("give a <repo> or --all")
-	}
-	if len(positional) == 1 {
-		o.repo = positional[0]
+	var err error
+	if o.repo, err = cli.ParseScope(newFlagSet(o), &o.all, args); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -120,23 +94,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
-	return rebaseAll(o, os.Stdout, os.Stderr, l, st, workDir)
+	return rebaseAll(o, os.Stdout, os.Stderr, wf.Layout, wf.State, wf.Dir)
 }
 
 // rebaseAll processes each in-scope repo independently: pull its primary
@@ -148,7 +110,7 @@ func run(args []string) error {
 // and counted as a problem. A failed pull is only a warning - the rebase
 // still runs against the local default branch.
 func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, workDir string) error {
-	scope, err := scopeRepos(o, st)
+	scope, err := workfolder.Scope(st, o.repo, o.all)
 	if err != nil {
 		return err
 	}
@@ -219,23 +181,6 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 	return nil
 }
 
-// scopeRepos resolves the repos a run operates on: every repo in the work
-// folder with --all, or the single named one. parseFlags guarantees exactly
-// one of the two is set.
-func scopeRepos(o *options, st *state.State) ([]state.Repo, error) {
-	if o.all {
-		return st.Repos, nil
-	}
-	for _, r := range st.Repos {
-		if r.Name == o.repo {
-			return []state.Repo{r}, nil
-		}
-	}
-	// Naming a repo the work folder does not hold is a malformed invocation,
-	// not a failed rebase: nothing was attempted.
-	return nil, cli.Usagef("repo %q is not part of %s", o.repo, st.DisplayName())
-}
-
 // reportRepo prints what a real run would do to one repo, touching nothing -
 // the --dry-run body. The pull has already run (unless --no-pull), so the
 // target is exactly as fresh as it would be in a real run; this is integrate's
@@ -271,9 +216,7 @@ func reportRepo(w io.Writer, name, main, wt, target string, problem func(string,
 	}
 	if len(commits) > 0 {
 		fmt.Fprintf(w, "%s: would rebase %d commit(s) from %s onto %s\n", name, len(commits), branch, target)
-		for _, c := range commits {
-			fmt.Fprintf(w, "  %s %s\n", shortSHA(c.SHA), c.Subject)
-		}
+		repo.PrintCommits(w, commits)
 		return
 	}
 	// Nothing to replay: rebase leaves the branch sitting at the target, so
@@ -288,12 +231,4 @@ func reportRepo(w io.Writer, name, main, wt, target string, problem func(string,
 	} else {
 		fmt.Fprintf(w, "%s: no commits to replay; %s would fast-forward to %s\n", name, branch, target)
 	}
-}
-
-// shortSHA abbreviates a commit id for reporting, leaving short ids untouched.
-func shortSHA(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
 }

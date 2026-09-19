@@ -3,7 +3,6 @@ package done
 import (
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/state"
 	teardownpkg "github.com/co-native/git-work/internal/teardown"
+	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
 )
 
@@ -59,10 +59,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers done's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("done", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("done")
 	fs.BoolVar(&o.deleteLocal, "delete-local", false, "delete local branches")
 	fs.BoolVar(&o.deleteRemote, "delete-remote", false, "delete remote branches")
 	fs.BoolVar(&o.force, "force", false, "override safety-check problems")
@@ -106,11 +103,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
+	_, l, err := config.LoadLayout()
 	if err != nil {
 		return err
 	}
@@ -142,9 +135,6 @@ func run(args []string) error {
 
 	// Interactive: ask what to do.
 	if !o.nonInteractive {
-		if !tui.IsInteractive() {
-			return tui.ErrNoTTY
-		}
 		if o.deleteLocal, err = tui.Confirm("Delete local branches?", false); err != nil {
 			return err
 		}
@@ -181,12 +171,8 @@ func run(args []string) error {
 		}
 	}
 
-	problems := runChecks(o, l, st, workDir)
-	if len(problems) > 0 {
-		if !o.force {
-			return fmt.Errorf("aborting (most of these can be overridden with --force):\n  %s", strings.Join(problems, "\n  "))
-		}
-		fmt.Fprintf(os.Stderr, "git-work: proceeding despite %d problem(s) (--force)\n", len(problems))
+	if err := teardownpkg.Gate(runChecks(o, l, st, workDir), o.force); err != nil {
+		return err
 	}
 
 	// Capture the count before teardown: TeardownRepo shrinks st.Repos as
@@ -283,14 +269,17 @@ const (
 // generatedNames are files done may delete without --remove-all: the state
 // files (including the atomic-save temp a crashed Save may leave) plus the
 // files new/refresh generate at the work-folder root.
-var generatedNames = map[string]bool{
-	state.FileName:          true,
-	state.FileName + ".tmp": true,
-	state.JSONFileName:      true,
-	"TICKET.md":             true,
-	"README.md":             true,
-	"CLAUDE.md":             true,
-}
+var generatedNames = func() map[string]bool {
+	names := map[string]bool{
+		state.FileName:          true,
+		state.FileName + ".tmp": true,
+		state.JSONFileName:      true,
+	}
+	for _, f := range template.GeneratedFiles {
+		names[f] = true
+	}
+	return names
+}()
 
 // extraFiles returns the workDir-relative paths of files at the work-folder
 // root that done did not generate. It skips the repo worktree directories

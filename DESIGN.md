@@ -16,16 +16,18 @@ folders_ (each a sibling collection of worktrees) under a _work root_. It instal
 Each command package owns its own flag parsing. Shared building blocks live under
 `internal/`:
 
-| Package    | Responsibility                                                                                                                                                                                                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config`   | Load/save the global config (YAML, or JSON by extension); defaults; dot-path key access (in `command/config`).                                                                                                                                                                  |
-| `state`    | Per-work-folder metadata (`.git-work.yaml`/`.json`): read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                           |
-| `layout`   | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`). The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                    |
-| `repo`     | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`) and the shared worktree/state branch check (`WorktreeBranchProblem`). |
-| `provider` | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                        |
-| `template` | Render the managed blocks of generated files (`TICKET.md`, `README.md`, `CLAUDE.md`), including the embedded work folder contract (`workfolder.md`) and the operator/per-repo overlays inlined into `CLAUDE.md`.                                                                |
-| `tui`      | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                       |
-| `teardown` | Per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                         |
+| Package      | Responsibility                                                                                                                                                                                                                                                                               |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; dot-path key access (in `command/config`).                                                                                                                                                                               |
+| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                        |
+| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                   |
+| `workfolder` | The preamble of every command run inside a work folder (`Load`: state found from the cwd, config, resolved layout) and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                              |
+| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`). The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                 |
+| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`) and the shared worktree/state branch check (`WorktreeBranchProblem`).              |
+| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                     |
+| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, `CLAUDE.md`), including the embedded work folder contract (`workfolder.md`) and the operator/per-repo overlays inlined into `CLAUDE.md`; `WriteWorkFolder` is the one place the set of generated files is assembled. |
+| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                    |
+| `teardown`   | Per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                      |
 
 ## Command reference
 
@@ -707,7 +709,7 @@ detected from `origin/HEAD` at clone/adopt time):
 ```
 ~/dev/repos/<repo>/
 ├── .git            # pointer file: "gitdir: ./main/.git" (core.worktree = ..)
-├── CLAUDE.md       # optional per-repo overlay (RepoOverlay)
+├── CLAUDE.md       # optional per-repo overlay, inlined by template.AggregateClaude
 └── main/           # the real clone (RepoMain); named after the default branch
 ```
 

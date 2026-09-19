@@ -6,7 +6,68 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/co-native/git-work/internal/config"
+	"github.com/co-native/git-work/internal/state"
 )
+
+// The files git-work generates at a work folder's root.
+const (
+	TicketFile = "TICKET.md"
+	ReadmeFile = "README.md"
+	ClaudeFile = "CLAUDE.md"
+)
+
+// GeneratedFiles lists every file git-work generates at a work folder's root:
+// the set `done` may delete without --remove-all.
+var GeneratedFiles = []string{TicketFile, ReadmeFile, ClaudeFile}
+
+// TicketDetails is what WriteWorkFolder renders TICKET.md from. Title, when
+// set, also replaces st.Title in the other generated files, so a freshly
+// fetched title shows everywhere at once.
+type TicketDetails struct {
+	Title       string
+	Description string
+}
+
+// WriteWorkFolder renders the work folder's generated files from st: the
+// README.md and CLAUDE.md managed blocks always, and TICKET.md when ticket is
+// given and the folder has a ticket (a ticketless folder never gets one).
+//
+// reposRoot is the resolved repos root (layout.Layout's), not the raw config
+// value: it locates the per-repo CLAUDE.md overlays on disk, so an unexpanded
+// ~ would find none and silently drop them from the generated file.
+func WriteWorkFolder(workDir, reposRoot string, st *state.State, ticket *TicketDetails) error {
+	title := st.Title
+	if ticket != nil && ticket.Title != "" {
+		title = ticket.Title
+	}
+	if ticket != nil && !st.NoTicket {
+		if err := WriteManaged(filepath.Join(workDir, TicketFile),
+			Ticket(st.TicketID, title, ticket.Description)); err != nil {
+			return err
+		}
+	}
+	repos := make([]string, len(st.Repos))
+	refs := make([]RepoRef, len(st.Repos))
+	for i, r := range st.Repos {
+		repos[i] = r.Name
+		refs[i] = RepoRef{Name: r.Name, Branch: r.Branch}
+	}
+	if err := WriteManaged(filepath.Join(workDir, ReadmeFile),
+		Readme(st.DisplayName(), st.Branch, repos)); err != nil {
+		return err
+	}
+	return WriteManaged(filepath.Join(workDir, ClaudeFile),
+		AggregateClaude(ClaudeInput{
+			ReposRoot:   reposRoot,
+			OverlayPath: config.OverlayPath(),
+			TicketID:    st.TicketID,
+			Title:       title,
+			Branch:      st.Branch,
+			Repos:       refs,
+		}))
+}
 
 const (
 	beginMarker = "<!-- git-work:begin -->"
@@ -61,7 +122,7 @@ var workFolderDoc string
 
 // ClaudeInput is everything AggregateClaude needs. It is a struct rather than a
 // parameter list because the two overlay sources pushed it past the point where
-// positional arguments stayed readable at the four call sites.
+// positional arguments stayed readable.
 type ClaudeInput struct {
 	// ReposRoot is where per-repo overlays are looked up
 	// (<ReposRoot>/<repo>/CLAUDE.md).

@@ -1,14 +1,12 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/co-native/git-work/internal/fileio"
 	"github.com/co-native/git-work/internal/layout"
 )
 
@@ -197,6 +195,20 @@ func (c *Config) Layout() (layout.Layout, error) {
 	return layout.Layout{ReposRoot: repos, WorkRoot: work}, nil
 }
 
+// LoadLayout reads the default config path and resolves its layout: the
+// preamble of every command that works on the repos or work root.
+func LoadLayout() (*Config, layout.Layout, error) {
+	c, err := Load()
+	if err != nil {
+		return nil, layout.Layout{}, err
+	}
+	l, err := c.Layout()
+	if err != nil {
+		return nil, layout.Layout{}, err
+	}
+	return c, l, nil
+}
+
 // Default returns a fresh config populated with built-in defaults.
 func Default() *Config { return defaults() }
 
@@ -233,14 +245,8 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, err
 	}
 	c := defaults()
-	if strings.EqualFold(filepath.Ext(path), ".json") {
-		if err := json.Unmarshal(data, c); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
-		}
-	} else {
-		if err := yaml.Unmarshal(data, c); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
-		}
+	if err := fileio.Unmarshal(path, data, c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return c, nil
 }
@@ -250,19 +256,9 @@ func (c *Config) SaveTo(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	var data []byte
-	var err error
-	if strings.EqualFold(filepath.Ext(path), ".json") {
-		data, err = json.MarshalIndent(c, "", "  ")
-	} else {
-		data, err = yaml.Marshal(c)
-	}
+	data, err := fileio.Marshal(path, c)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileio.WriteAtomic(path, data)
 }

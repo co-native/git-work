@@ -161,7 +161,7 @@ func adoptFresh(w io.Writer, l layout.Layout, src string) error {
 	if err := os.Rename(src, primary); err != nil {
 		return err
 	}
-	if err := writePointer(repoDir, def); err != nil {
+	if err := layout.WritePrimaryPointer(repoDir, def); err != nil {
 		return err
 	}
 	if err := gitrepo.SetCoreWorktree(primary, ".."); err != nil {
@@ -239,7 +239,7 @@ func normalize(w io.Writer, l layout.Layout, name string) error {
 		fmt.Fprintf(w, "%s: renamed primary %s -> %s\n", name, primary, def)
 	}
 	if needPointer {
-		if err := writePointer(repoDir, def); err != nil {
+		if err := layout.WritePrimaryPointer(repoDir, def); err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "%s: wrote .git pointer file (gitdir: ./%s/.git)\n", name, def)
@@ -257,11 +257,6 @@ func normalize(w io.Writer, l layout.Layout, name string) error {
 		fmt.Fprintf(w, "%s: checked out the default branch %s\n", name, def)
 	}
 	return repairLinked(w, mainDir, linked)
-}
-
-// writePointer writes the parent .git pointer file naming the primary dir.
-func writePointer(repoDir, primary string) error {
-	return os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: ./"+primary+"/.git\n"), 0o644)
 }
 
 // linkedWorktrees returns the repo's linked worktrees (the primary itself

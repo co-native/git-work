@@ -14,6 +14,7 @@ import (
 
 	"github.com/co-native/git-work/internal/cli"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -53,10 +54,7 @@ var Cmd = &cli.Command{
 // everything after it is git's. It is separate from parseFlags so the
 // conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("git", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("git")
 	fs.BoolVar(&o.all, "all", false, "run in every repo in the work folder")
 	fs.BoolVar(&o.all, "a", false, "shorthand for --all")
 	return fs
@@ -88,21 +86,6 @@ func parseFlags(args []string) (*options, error) {
 		own, o.args = args[:sep], args[sep+1:]
 	}
 
-	fs := newFlagSet(o)
-
-	// Within the pre-`--` half every token is git-work's own, so the
-	// positional may sit anywhere on the line as it can for push and integrate.
-	var flagArgs, positional []string
-	for _, a := range own {
-		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a)
-		} else {
-			positional = append(positional, a)
-		}
-	}
-	if err := fs.Parse(flagArgs); err != nil {
-		return nil, cli.Usagef("%v", err)
-	}
 	// The separator is checked before the scope rules on purpose. Without a
 	// `--` there is no way to tell a repo name from a git command, so
 	// `git work git -a status` would otherwise report "give a <repo> or
@@ -116,17 +99,11 @@ func parseFlags(args []string) (*options, error) {
 	if len(o.args) == 0 {
 		return nil, cli.Usagef("nothing after `--`; give a git command, e.g. `git work git -a -- status`")
 	}
-	if len(positional) > 1 {
-		return nil, cli.Usagef("give at most one <repo>")
-	}
-	switch {
-	case o.all && len(positional) == 1:
-		return nil, cli.Usagef("give a <repo> or --all, not both")
-	case !o.all && len(positional) == 0:
-		return nil, cli.Usagef("give a <repo> or --all")
-	}
-	if len(positional) == 1 {
-		o.repo = positional[0]
+	// Within the pre-`--` half every token is git-work's own, so the
+	// positional may sit anywhere on the line as it can for push and integrate.
+	var err error
+	if o.repo, err = cli.ParseScope(newFlagSet(o), &o.all, own); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -182,7 +159,7 @@ func run(args []string) error {
 // (`git diff --quiet` on a dirty tree); git-work cannot tell those apart, so it
 // reports the code and lets the operator judge.
 func runAll(o *options, in io.Reader, w, errw io.Writer, st *state.State, workDir string) error {
-	scope, err := scopeRepos(o, st)
+	scope, err := workfolder.Scope(st, o.repo, o.all)
 	if err != nil {
 		return err
 	}
@@ -215,21 +192,4 @@ func runAll(o *options, in io.Reader, w, errw io.Writer, st *state.State, workDi
 		return fmt.Errorf("%d repo(s) exited nonzero:\n  %s", len(failures), strings.Join(failures, "\n  "))
 	}
 	return nil
-}
-
-// scopeRepos resolves the repos a run operates on: every repo in the work
-// folder with --all, or the single named one. parseFlags guarantees exactly
-// one of the two is set.
-func scopeRepos(o *options, st *state.State) ([]state.Repo, error) {
-	if o.all {
-		return st.Repos, nil
-	}
-	for _, r := range st.Repos {
-		if r.Name == o.repo {
-			return []state.Repo{r}, nil
-		}
-	}
-	// Naming a repo the work folder does not hold is a malformed invocation,
-	// not a failed run: the usage block that comes with it is the answer.
-	return nil, cli.Usagef("repo %q is not part of %s", o.repo, st.DisplayName())
 }

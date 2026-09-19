@@ -26,7 +26,7 @@ APPLY=0
 FIX_TARGET="clean"
 
 usage() {
-	cat >&2 <<'USAGE'
+	cat <<'USAGE'
 Usage: check-dependency-vulns.sh [options]
 
 Reporting:
@@ -76,7 +76,7 @@ while [ $# -gt 0 ]; do
 		--yes)            APPLY=1; shift ;;
 		--fix-target)     FIX_TARGET="${2:?--fix-target needs a value}"; shift 2 ;;
 		-h|--help)        usage; exit 0 ;;
-		*) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+		*) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
@@ -112,6 +112,27 @@ run() {
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/osv"
+
+# The version an advisory says fixes *this* module, from its cached OSV record;
+# nothing when the advisory names no fix. Filtered to the module rather than
+# every package the advisory touches: Go advisories also list toolchain versions.
+fixed_version() {
+	local id="$1" mod="$2"
+	jq -r --arg m "$mod" '
+		[.affected[]? | select(.package.name == $m)
+		 | .ranges[]?.events[]? | select(.fixed) | .fixed] | first // empty' \
+		"$TMP/osv/$id.json"
+}
+
+# Every published version of a module, ascending, one per line. The proxy
+# answers once per module per run; the two upgrade targets both read it.
+module_versions() {
+	local mod="$1" cache="$TMP/versions-${mod//\//_}.txt"
+	if [ ! -f "$cache" ]; then
+		go list -m -versions "$mod" 2>/dev/null | cut -d' ' -f2- | tr ' ' '\n' > "$cache"
+	fi
+	cat "$cache"
+}
 
 cd "$DIR"
 
@@ -176,11 +197,8 @@ scan() {
 
 			cve="$(jq -r '[.aliases[]? | select(startswith("CVE-"))] | first // ""' "$local_json")"
 			summary="$(jq -r '.summary // .details // "-" | split("\n")[0]' "$local_json")"
-			# Fixed version for *this* module, not every package the advisory
-			# touches: Go advisories also list toolchain versions.
-			fixed="$(jq -r --arg m "$mod" '
-				[.affected[]? | select(.package.name == $m)
-				 | .ranges[]?.events[]? | select(.fixed) | .fixed] | first // "-"' "$local_json")"
+			fixed="$(fixed_version "$id" "$mod")"
+			fixed="${fixed:--}"
 
 			read -r score sev src < <(lookup_score "$local_json" "$cve"; echo)
 			score="${score:-}"; sev="${sev:-}"; src="${src:-}"
@@ -239,15 +257,14 @@ lookup_score() {
 }
 
 # --------------------------------------------------------------------- report
+TABLE_FMT='%-6s  %-18s  %-26s  %-10s  %-10s  %-11s  %s\n'
 print_table() {
-	printf '%-6s  %-18s  %-26s  %-10s  %-10s  %-11s  %s\n' \
-		SCORE CVE MODULE HAVE FIXED REACHABILITY SUMMARY
-	printf '%-6s  %-18s  %-26s  %-10s  %-10s  %-11s  %s\n' \
+	printf "$TABLE_FMT" SCORE CVE MODULE HAVE FIXED REACHABILITY SUMMARY
+	printf "$TABLE_FMT" \
 		"------" "------------------" "--------------------------" \
 		"----------" "----------" "-----------" "-------"
 	while IFS=$'\t' read -r score cve mod have fixed sev reach src id summary; do
-		printf '%-6s  %-18s  %-26s  %-10s  %-10s  %-11s  %s\n' \
-			"$score" "$cve" "$mod" "$have" "$fixed" "$reach" "$summary"
+		printf "$TABLE_FMT" "$score" "$cve" "$mod" "$have" "$fixed" "$reach" "$summary"
 	done
 }
 
@@ -317,7 +334,7 @@ idx_of() {
 target_clean() {
 	local mod="$1" cur="$2"
 	local -a versions cands
-	read -ra versions <<< "$(go list -m -versions "$mod" 2>/dev/null | cut -d' ' -f2-)"
+	read -ra versions <<< "$(module_versions "$mod" | tr '\n' ' ')"
 	[ "${#versions[@]}" -gt 0 ] || return 1
 
 	local curidx
@@ -351,15 +368,12 @@ target_clean() {
 target_minimal() {
 	local mod="$1" cur="$2"; shift 2
 	local -a versions
-	read -ra versions <<< "$(go list -m -versions "$mod" 2>/dev/null | cut -d' ' -f2-)"
+	read -ra versions <<< "$(module_versions "$mod" | tr '\n' ' ')"
 	[ "${#versions[@]}" -gt 0 ] || return 1
 
 	local best=-1 id fixed idx
 	for id in "$@"; do
-		fixed="$(jq -r --arg m "$mod" '
-			[.affected[]? | select(.package.name == $m)
-			 | .ranges[]?.events[]? | select(.fixed) | .fixed] | first // empty' \
-			"$TMP/osv/$id.json")"
+		fixed="$(fixed_version "$id" "$mod")"
 		[ -n "$fixed" ] || continue
 		idx="$(idx_of "v${fixed#v}" "${versions[@]}")" || continue
 		[ "$idx" -gt "$best" ] && best="$idx"
@@ -371,7 +385,10 @@ target_minimal() {
 go_directive() { go mod edit -json | jq -r '.Go // "-"'; }
 require_snapshot() { go mod edit -json | jq -r '.Require[]? | "\(.Path) \(.Version)"' | sort; }
 
-do_fix() {
+# Resolve which modules to upgrade and to what, into $TMP/plan.tsv (module,
+# have, target, advisory ids), with the graph-only findings set aside in
+# $TMP/skipped.tsv and anything unresolvable noted in $TMP/warn.txt.
+plan_fixes() {
 	# Candidates are scored at or above the threshold AND declared in go.mod.
 	# graph-only findings are excluded on purpose: they are not compiled into
 	# the binary, and `go get`ing them writes a require line for a module this
@@ -412,7 +429,10 @@ do_fix() {
 			printf '%s\t%s\t%s\t%s\n' "$mod" "$have" "$target" "$ids" >> "$TMP/plan.tsv"
 		done < "$TMP/fixmods.txt"
 	fi
+}
 
+# Print the plan. Returns 1 when there is nothing to apply.
+print_plan() {
 	echo
 	echo "=============================================================="
 	echo "FIX PLAN  (target: $FIX_TARGET, threshold: CVSS >= $MIN_SCORE)"
@@ -441,11 +461,11 @@ do_fix() {
 
 	if [ ! -s "$TMP/fixable.tsv" ]; then
 		echo "Nothing to upgrade."
-		return 0
+		return 1
 	fi
 	if [ ! -s "$TMP/plan.tsv" ]; then
 		echo "No upgrade targets could be resolved."
-		return 0
+		return 1
 	fi
 
 	echo "Planned upgrades:"
@@ -464,14 +484,11 @@ do_fix() {
 		echo "  \$ go get $mod@$target"
 	done < "$TMP/plan.tsv"
 	echo "  \$ go mod tidy"
+}
 
-	if [ "$APPLY" -eq 0 ]; then
-		echo
-		echo "Planning only. Re-run with --yes to apply."
-		return 0
-	fi
-
-	# --------------------------------------------------------------- executing
+# Run the plan, then tidy, build, vet and rescan; roll go.mod/go.sum back when
+# an upgrade or the tidy fails.
+apply_plan() {
 	echo
 	echo "=============================================================="
 	echo "APPLYING"
@@ -543,7 +560,15 @@ fi
 report
 
 if [ "$FIX" -eq 1 ]; then
-	do_fix
+	plan_fixes
+	if print_plan; then
+		if [ "$APPLY" -eq 1 ]; then
+			apply_plan
+		else
+			echo
+			echo "Planning only. Re-run with --yes to apply."
+		fi
+	fi
 fi
 
 if [ "$EXIT_ON_FIND" -eq 1 ] && [ -s "$TMP/scored.tsv" ]; then

@@ -14,9 +14,8 @@ type Layout struct {
 	WorkRoot  string
 }
 
-func (l Layout) RepoDir(repo string) string     { return filepath.Join(l.ReposRoot, repo) }
-func (l Layout) RepoOverlay(repo string) string { return filepath.Join(l.ReposRoot, repo, "CLAUDE.md") }
-func (l Layout) WorkDir(name string) string     { return filepath.Join(l.WorkRoot, name) }
+func (l Layout) RepoDir(repo string) string { return filepath.Join(l.ReposRoot, repo) }
+func (l Layout) WorkDir(name string) string { return filepath.Join(l.WorkRoot, name) }
 func (l Layout) Worktree(work, repo string) string {
 	return filepath.Join(l.WorkRoot, work, repo)
 }
@@ -32,6 +31,12 @@ func (l Layout) RepoMain(repo string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(repoDir, dir), nil
+}
+
+// WritePrimaryPointer writes repoDir's .git pointer file naming primary, the
+// primary clone directory relative to repoDir, in the form PrimaryDir reads.
+func WritePrimaryPointer(repoDir, primary string) error {
+	return os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: ./"+primary+"/.git\n"), 0o644)
 }
 
 // PrimaryDir returns the primary clone directory name recorded in repoDir's

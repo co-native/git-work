@@ -3,17 +3,15 @@ package add
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
-	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
 	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -50,10 +48,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers add's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("add")
 	fs.StringVar(&o.reposCSV, "repos", "", "comma-separated repo names to add")
 	fs.StringVar(&o.branch, "branch", "", "branch name override")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of prompting")
@@ -70,13 +65,7 @@ func parseFlags(args []string) (*options, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
-	if o.reposCSV != "" {
-		for _, r := range strings.Split(o.reposCSV, ",") {
-			if r = strings.TrimSpace(r); r != "" {
-				o.repos = append(o.repos, r)
-			}
-		}
-	}
+	o.repos = cli.CommaList(o.reposCSV)
 	if err := repo.CheckBranchArg(o.branch); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
@@ -116,22 +105,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
+	st, workDir, l := wf.State, wf.Dir, wf.Layout
 
 	if len(o.repos) == 0 {
 		if o.nonInteractive {
@@ -208,27 +186,8 @@ func run(args []string) error {
 		return err
 	}
 
-	// Re-aggregate CLAUDE.md + README managed blocks.
-	repos := make([]string, len(st.Repos))
-	refs := make([]template.RepoRef, len(st.Repos))
-	for i, r := range st.Repos {
-		repos[i] = r.Name
-		refs[i] = template.RepoRef{Name: r.Name, Branch: r.Branch}
-	}
-	title := st.Title
-	if err := template.WriteManaged(filepath.Join(workDir, "README.md"),
-		template.Readme(st.DisplayName(), st.Branch, repos)); err != nil {
-		return err
-	}
-	if err := template.WriteManaged(filepath.Join(workDir, "CLAUDE.md"),
-		template.AggregateClaude(template.ClaudeInput{
-			ReposRoot:   l.ReposRoot,
-			OverlayPath: config.OverlayPath(),
-			TicketID:    st.TicketID,
-			Title:       title,
-			Branch:      st.Branch,
-			Repos:       refs,
-		})); err != nil {
+	// Re-aggregate the README.md and CLAUDE.md managed blocks.
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, nil); err != nil {
 		return err
 	}
 	success = true

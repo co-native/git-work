@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/co-native/git-work/internal/cli"
-	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/provider"
 	"github.com/co-native/git-work/internal/repo"
-	"github.com/co-native/git-work/internal/state"
 	"github.com/co-native/git-work/internal/template"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -43,10 +41,7 @@ var Cmd = &cli.Command{
 // parseFlags so the conformance test can compare the registered flags with
 // Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("refresh", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("refresh")
 	fs.BoolVar(&o.noPull, "no-pull", false, "skip pulling the ticket repos' primary clones")
 	return fs
 }
@@ -83,37 +78,23 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
+	st, workDir, cfg, l := wf.State, wf.Dir, wf.Config, wf.Layout
 
-	repos := make([]string, len(st.Repos))
-	refs := make([]template.RepoRef, len(st.Repos))
-	for i, r := range st.Repos {
-		repos[i] = r.Name
-		refs[i] = template.RepoRef{Name: r.Name, Branch: r.Branch}
-	}
-
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
 	if !o.noPull {
-		pullPrimaries(os.Stdout, os.Stderr, l, repos)
+		names := make([]string, len(st.Repos))
+		for i, r := range st.Repos {
+			names[i] = r.Name
+		}
+		pullPrimaries(os.Stdout, os.Stderr, l, names)
 	}
 
 	// Re-fetch provider details for TICKET.md. Ticketless work folders have
 	// no provider and no TICKET.md, so both steps are skipped.
-	title, description := st.Title, ""
+	ticket := &template.TicketDetails{Title: st.Title}
 	if !st.NoTicket {
 		if err := provider.Validate(cfg.Providers); err != nil {
 			return err
@@ -127,30 +108,13 @@ func run(args []string) error {
 				fmt.Fprintf(os.Stderr, "git-work: %v (keeping existing title)\n", err)
 			} else {
 				if d.Title != "" {
-					title = d.Title
+					ticket.Title = d.Title
 				}
-				description = d.Description
+				ticket.Description = d.Description
 			}
 		}
-		if err := template.WriteManaged(filepath.Join(workDir, "TICKET.md"),
-			template.Ticket(st.TicketID, title, description)); err != nil {
-			return err
-		}
 	}
-
-	if err := template.WriteManaged(filepath.Join(workDir, "README.md"),
-		template.Readme(st.DisplayName(), st.Branch, repos)); err != nil {
-		return err
-	}
-	if err := template.WriteManaged(filepath.Join(workDir, "CLAUDE.md"),
-		template.AggregateClaude(template.ClaudeInput{
-			ReposRoot:   l.ReposRoot,
-			OverlayPath: config.OverlayPath(),
-			TicketID:    st.TicketID,
-			Title:       title,
-			Branch:      st.Branch,
-			Repos:       refs,
-		})); err != nil {
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, ticket); err != nil {
 		return err
 	}
 	fmt.Printf("Refreshed generated files in %s\n", workDir)
@@ -164,21 +128,20 @@ func run(args []string) error {
 // it never aborts the refresh.
 func pullPrimaries(w, errw io.Writer, l layout.Layout, names []string) {
 	for _, name := range names {
-		main, err := l.RepoMain(name)
-		if err != nil {
-			fmt.Fprintf(errw, "git-work: pull %s: %v (skipping)\n", name, err)
-			continue
-		}
-		def, err := repo.DefaultBranchName(main)
-		if err != nil {
-			fmt.Fprintf(errw, "git-work: pull %s: %v (skipping)\n", name, err)
-			continue
-		}
-		res, err := repo.PullBranchFFOnly(main, def)
+		res, err := pullPrimary(l, name)
 		if err != nil {
 			fmt.Fprintf(errw, "git-work: pull %s: %v (skipping)\n", name, err)
 			continue
 		}
 		fmt.Fprintf(w, "Pulled %s: %s\n", name, res)
 	}
+}
+
+// pullPrimary freshens one repo's default branch in its primary clone.
+func pullPrimary(l layout.Layout, name string) (repo.PullResult, error) {
+	main, err := l.RepoMain(name)
+	if err != nil {
+		return repo.PullUpToDate, err
+	}
+	return repo.PullDefaultBranch(main)
 }

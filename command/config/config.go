@@ -16,40 +16,15 @@ import (
 // Run dispatches `git work config`; it prints any error to stderr and returns
 // the process exit code.
 //
-// Help is resolved entirely here, before run() is reached. That ordering is
-// the point: `path`, `list` and `edit` ignore their arguments structurally
-// (runEdit takes none at all), so a help check inside run() could not work -
-// `git work config edit -h` used to open $EDITOR on the config file, creating
-// it if absent.
+// Help is resolved entirely in cli.RunGroup, before run() is reached. That
+// ordering is the point: `path`, `list` and `edit` ignore their arguments
+// structurally (runEdit takes none at all), so a help check inside run()
+// could not work - `git work config edit -h` used to open $EDITOR on the
+// config file, creating it if absent.
 func Run(args []string) int {
-	if len(args) == 0 {
-		return cli.FailText(cli.Usagef("give a subcommand"), Cmd.Render())
-	}
-
-	// `config help <sub>` and `config -h` / `config --help`.
-	if cli.IsHelpVerb(args[0]) {
-		if len(args) == 1 {
-			return cli.Help(Cmd)
-		}
-		sub := cli.Lookup(Cmd.Subs, args[1])
-		if sub == nil {
-			return cli.FailText(cli.Usagef("unknown config subcommand %q", args[1]), Cmd.Render())
-		}
-		return cli.Help(sub)
-	}
-
-	sub := cli.Lookup(Cmd.Subs, args[0])
-	if sub == nil {
-		return cli.FailText(cli.Usagef("unknown config subcommand %q", args[0]), Cmd.Render())
-	}
-	// `config <sub> -h`, intercepted before the subcommand can act.
-	if cli.Wanted(args[1:]) {
-		return cli.Help(sub)
-	}
-	if err := run(args, os.Stdout); err != nil {
-		return cli.Fail(err, sub)
-	}
-	return cli.OK
+	return cli.RunGroup(Cmd, args, func(sub *cli.Command, rest []string) error {
+		return run(append([]string{sub.SubName()}, rest...), os.Stdout)
+	})
 }
 
 func run(args []string, out io.Writer) error {
@@ -118,10 +93,7 @@ func run(args []string, out io.Writer) error {
 // newInitFlagSet registers `config init`'s flags. It is separate from runInit
 // so the conformance test can compare them with InitCmd's.
 func newInitFlagSet(force *bool) *flag.FlagSet {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("init")
 	fs.BoolVar(force, "force", false, "overwrite an existing config file")
 	return fs
 }

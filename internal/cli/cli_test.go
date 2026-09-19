@@ -243,3 +243,67 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+func TestParseScope(t *testing.T) {
+	parse := func(args ...string) (repo string, all bool, err error) {
+		fs := NewFlagSet("x")
+		fs.BoolVar(&all, "all", false, "")
+		fs.BoolVar(&all, "a", false, "")
+		repo, err = ParseScope(fs, &all, args)
+		return repo, all, err
+	}
+	if repo, all, err := parse("api"); err != nil || repo != "api" || all {
+		t.Errorf("named: %q %v %v", repo, all, err)
+	}
+	if repo, all, err := parse("-a"); err != nil || repo != "" || !all {
+		t.Errorf("--all: %q %v %v", repo, all, err)
+	}
+	if repo, _, err := parse("--all", "api"); err == nil {
+		t.Errorf("flag after positional: %q, want the positional either side", repo)
+	} else if _, _, err := parse("api", "--all"); err == nil {
+		t.Error("both given: want a usage error")
+	}
+	for _, args := range [][]string{{}, {"a", "b"}, {"--nope"}} {
+		if _, _, err := parse(args...); err == nil {
+			t.Errorf("%v: want a usage error", args)
+		}
+	}
+}
+
+func TestCommaList(t *testing.T) {
+	if got := CommaList(" a, b ,,c "); len(got) != 3 || got[0] != "a" || got[2] != "c" {
+		t.Errorf("CommaList = %q", got)
+	}
+	if got := CommaList(""); got != nil {
+		t.Errorf("CommaList(\"\") = %q, want nil", got)
+	}
+}
+
+func TestRunGroup(t *testing.T) {
+	sub := &Command{Name: "grp sub", Short: "a sub", Synopsis: []string{"git work grp sub"}}
+	grp := &Command{Name: "grp", Short: "a group", Synopsis: []string{"git work grp <sub>"}, Subs: []*Command{sub}}
+	var ran []string
+	run := func(c *Command, rest []string) error {
+		ran = append(ran, c.SubName()+":"+strings.Join(rest, ","))
+		return nil
+	}
+	cases := []struct {
+		args []string
+		code int
+		ran  bool
+	}{
+		{nil, Usage, false},
+		{[]string{"help"}, OK, false},
+		{[]string{"help", "sub"}, OK, false},
+		{[]string{"help", "nope"}, Usage, false},
+		{[]string{"nope"}, Usage, false},
+		{[]string{"sub", "-h"}, OK, false},
+		{[]string{"sub", "x"}, OK, true},
+	}
+	for _, c := range cases {
+		ran = nil
+		if code := RunGroup(grp, c.args, run); code != c.code || (len(ran) > 0) != c.ran {
+			t.Errorf("RunGroup(%v) = %d, ran %v; want %d, ran %v", c.args, code, ran, c.code, c.ran)
+		}
+	}
+}

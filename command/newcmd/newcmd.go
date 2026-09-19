@@ -3,9 +3,7 @@ package newcmd
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -66,10 +64,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers new's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("new", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("new")
 	fs.StringVar(&o.reposCSV, "repos", "", "comma-separated repo names")
 	fs.StringVar(&o.description, "description", "", "description slug override")
 	fs.StringVar(&o.dir, "dir", "", "work folder name override")
@@ -114,13 +109,7 @@ func parseFlags(args []string) (*options, error) {
 	if extra := fs.Args(); len(extra) > 0 {
 		return nil, cli.Usagef("unexpected argument %q after %q: `git work new` takes exactly one <ticket-id|name>", extra[0], o.ticketID)
 	}
-	if o.reposCSV != "" {
-		for _, r := range strings.Split(o.reposCSV, ",") {
-			if r = strings.TrimSpace(r); r != "" {
-				o.repos = append(o.repos, r)
-			}
-		}
-	}
+	o.repos = cli.CommaList(o.reposCSV)
 	if err := repo.CheckBranchArg(o.branch); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
@@ -144,61 +133,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load()
+	cfg, l, err := config.LoadLayout()
 	if err != nil {
 		return err
 	}
-	l, err := cfg.Layout()
+	tk, err := resolveTicket(o, cfg)
 	if err != nil {
 		return err
-	}
-
-	displayID := ""
-	title := ""
-	description := ""
-	providerName := ""
-	folderCase, branchCase := "", ""
-	slug := o.description
-	if o.noTicket {
-		// Ticketless: the positional arg is a plain name - no provider
-		// lookup, no TICKET.md; folder and branch derive from the name.
-		title = o.ticketID
-		if slug == "" {
-			slug = slugify(o.ticketID)
-		}
-		if slug == "" {
-			// Determined entirely by the argument typed, so it is the
-			// invocation that is wrong, not the environment.
-			return cli.Usagef("name %q produces an empty folder name", o.ticketID)
-		}
-	} else {
-		if err := provider.Validate(cfg.Providers); err != nil {
-			return err
-		}
-		match, err := provider.Resolve(cfg.Providers, o.ticketID)
-		if err != nil {
-			return err
-		}
-		if match.Provider == nil && len(cfg.Providers) > 0 {
-			return fmt.Errorf("ticket id %q matches no configured provider (use --no-ticket for a ticketless work folder)", o.ticketID)
-		}
-		displayID = provider.DisplayID(o.ticketID)
-		title = displayID
-		if match.Provider != nil {
-			folderCase, branchCase = match.Provider.FolderCase, match.Provider.BranchCase
-			if d, err := provider.Fetch(match, o.ticketID); err != nil {
-				fmt.Fprintf(os.Stderr, "git-work: %v (continuing without ticket details)\n", err)
-			} else {
-				providerName = match.Provider.Name
-				if d.Title != "" {
-					title = d.Title
-				}
-				description = d.Description
-			}
-		}
-		if slug == "" {
-			slug = slugify(title)
-		}
 	}
 
 	// Resolve repos. --repos is a replacement, not an addition: naming repos
@@ -239,11 +180,7 @@ func run(args []string) error {
 	// Resolve work dir name and branch.
 	dirName := o.dir
 	if dirName == "" {
-		if o.noTicket {
-			dirName = slug
-		} else {
-			dirName = provider.CaseID(o.ticketID, folderCase) + "-" + slug
-		}
+		dirName = tk.name(o, tk.folderCase)
 		if !o.nonInteractive {
 			dirName, err = tui.Input("Work folder name", dirName)
 			if err != nil {
@@ -253,11 +190,7 @@ func run(args []string) error {
 	}
 	branch := o.branch
 	if branch == "" {
-		if o.noTicket {
-			branch = slug
-		} else {
-			branch = provider.CaseID(o.ticketID, branchCase) + "-" + slug
-		}
+		branch = tk.name(o, tk.branchCase)
 		if !o.nonInteractive {
 			branch, err = tui.Input("Branch name", branch)
 			if err != nil {
@@ -275,7 +208,7 @@ func run(args []string) error {
 	// has none, so its name-derived slug (the default branch name) stands in.
 	matchID := o.ticketID
 	if o.noTicket {
-		matchID = slug
+		matchID = tk.slug
 	}
 	// Every repo resolves before anything is created: a refusal reports all
 	// repos at once and leaves nothing to roll back.
@@ -314,7 +247,7 @@ func run(args []string) error {
 		_ = os.RemoveAll(workDir)
 	}()
 
-	st := &state.State{TicketID: displayID, Title: title, Slug: slug, Branch: branch, Provider: providerName, NoTicket: o.noTicket}
+	st := &state.State{TicketID: tk.displayID, Title: tk.title, Slug: tk.slug, Branch: branch, Provider: tk.providerName, NoTicket: o.noTicket}
 	for _, p := range plan {
 		if err := p.Choice.Checkout(p.Main, l.Worktree(dirName, p.Name)); err != nil {
 			return err
@@ -324,7 +257,7 @@ func run(args []string) error {
 		added = append(added, rec)
 	}
 
-	if err := writeFiles(workDir, st, l.ReposRoot, description); err != nil {
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, &template.TicketDetails{Description: tk.description}); err != nil {
 		return err
 	}
 	if err := st.Save(workDir); err != nil {
@@ -340,37 +273,75 @@ func warn(msg string) {
 	fmt.Fprintf(os.Stderr, "git-work: %s\n", msg)
 }
 
-// writeFiles writes TICKET/README/CLAUDE managed blocks for the work folder.
-// Ticketless folders get no TICKET.md and name-based headings.
-// reposRoot is the resolved repos root (layout.Layout's), not the raw config
-// value: it locates the per-repo CLAUDE.md overlays on disk, so an unexpanded
-// ~ would find none and silently drop them from the generated file.
-func writeFiles(workDir string, st *state.State, reposRoot, description string) error {
-	repos := make([]string, len(st.Repos))
-	refs := make([]template.RepoRef, len(st.Repos))
-	for i, r := range st.Repos {
-		repos[i] = r.Name
-		refs[i] = template.RepoRef{Name: r.Name, Branch: r.Branch}
+// ticket is what the positional argument resolved to: the identity the state
+// file records, the description TICKET.md renders, and the provider's naming
+// rules for the folder and branch.
+type ticket struct {
+	displayID    string // "" for a ticketless folder
+	title        string
+	slug         string
+	description  string
+	providerName string
+	folderCase   string
+	branchCase   string
+}
+
+// name derives the default folder or branch name: the slug alone for a
+// ticketless folder, else the ticket id in the provider's case for that use
+// followed by the slug.
+func (t ticket) name(o *options, caseRule string) string {
+	if o.noTicket {
+		return t.slug
 	}
-	if !st.NoTicket {
-		if err := template.WriteManaged(filepath.Join(workDir, "TICKET.md"),
-			template.Ticket(st.TicketID, st.Title, description)); err != nil {
-			return err
+	return provider.CaseID(o.ticketID, caseRule) + "-" + t.slug
+}
+
+// resolveTicket resolves the positional argument. Ticketless, it is a plain
+// name: no provider lookup, folder and branch derive from its slug. Otherwise
+// the matching provider is asked for the ticket's details; a failed fetch is
+// a warning, and the id alone stands in for the title.
+func resolveTicket(o *options, cfg *config.Config) (ticket, error) {
+	t := ticket{slug: o.description}
+	if o.noTicket {
+		t.title = o.ticketID
+		if t.slug == "" {
+			t.slug = slugify(o.ticketID)
+		}
+		if t.slug == "" {
+			// Determined entirely by the argument typed, so it is the
+			// invocation that is wrong, not the environment.
+			return t, cli.Usagef("name %q produces an empty folder name", o.ticketID)
+		}
+		return t, nil
+	}
+	if err := provider.Validate(cfg.Providers); err != nil {
+		return t, err
+	}
+	match, err := provider.Resolve(cfg.Providers, o.ticketID)
+	if err != nil {
+		return t, err
+	}
+	if match.Provider == nil && len(cfg.Providers) > 0 {
+		return t, fmt.Errorf("ticket id %q matches no configured provider (use --no-ticket for a ticketless work folder)", o.ticketID)
+	}
+	t.displayID = provider.DisplayID(o.ticketID)
+	t.title = t.displayID
+	if match.Provider != nil {
+		t.folderCase, t.branchCase = match.Provider.FolderCase, match.Provider.BranchCase
+		if d, err := provider.Fetch(match, o.ticketID); err != nil {
+			fmt.Fprintf(os.Stderr, "git-work: %v (continuing without ticket details)\n", err)
+		} else {
+			t.providerName = match.Provider.Name
+			if d.Title != "" {
+				t.title = d.Title
+			}
+			t.description = d.Description
 		}
 	}
-	if err := template.WriteManaged(filepath.Join(workDir, "README.md"),
-		template.Readme(st.DisplayName(), st.Branch, repos)); err != nil {
-		return err
+	if t.slug == "" {
+		t.slug = slugify(t.title)
 	}
-	return template.WriteManaged(filepath.Join(workDir, "CLAUDE.md"),
-		template.AggregateClaude(template.ClaudeInput{
-			ReposRoot:   reposRoot,
-			OverlayPath: config.OverlayPath(),
-			TicketID:    st.TicketID,
-			Title:       st.Title,
-			Branch:      st.Branch,
-			Repos:       refs,
-		}))
+	return t, nil
 }
 
 // defaultRepos returns the repos flagged add_by_default, in the order

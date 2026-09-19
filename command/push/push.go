@@ -3,16 +3,15 @@ package push
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
-	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -52,10 +51,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers push's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("push", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("push")
 	fs.BoolVar(&o.all, "all", false, "push every repo in the work folder")
 	fs.BoolVar(&o.all, "a", false, "shorthand for --all")
 	fs.BoolVar(&o.force, "force", false, "force-push (uses --force-with-lease)")
@@ -68,43 +64,21 @@ func newFlagSet(o *options) *flag.FlagSet {
 	return fs
 }
 
-// parseFlags parses `git work push` arguments. Every flag is boolean, so the
-// single positional <repo> may appear anywhere on the line; leading-dash
-// tokens are partitioned out as flags (this deliberately does NOT reject a
-// leading `-` first arg, so `push --all` parses).
+// parseFlags parses `git work push` arguments: the shared `<repo> | --all`
+// scope (see cli.ParseScope) plus push's own flags.
 //
 // Help is handled by Run before this is reached, so -h/--help never appears
 // here.
 func parseFlags(args []string) (*options, error) {
 	o := &options{}
-	fs := newFlagSet(o)
-
-	var flagArgs, positional []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a)
-		} else {
-			positional = append(positional, a)
-		}
+	var err error
+	if o.repo, err = cli.ParseScope(newFlagSet(o), &o.all, args); err != nil {
+		return nil, err
 	}
-	if err := fs.Parse(flagArgs); err != nil {
-		return nil, cli.Usagef("%v", err)
-	}
-	if len(positional) > 1 {
-		return nil, cli.Usagef("give at most one <repo>")
-	}
-	switch {
-	case o.all && len(positional) == 1:
-		return nil, cli.Usagef("give a <repo> or --all, not both")
-	case !o.all && len(positional) == 0:
-		return nil, cli.Usagef("give a <repo> or --all")
-	case o.main && o.force:
+	if o.main && o.force {
 		// A default branch is shared; git-work never rewrites its history.
 		// Rejecting the combination beats silently ignoring -f.
 		return nil, cli.Usagef("-f/--force does not apply to --main; default branches are never force-pushed")
-	}
-	if len(positional) == 1 {
-		o.repo = positional[0]
 	}
 	return o, nil
 }
@@ -126,23 +100,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
-	return push(o, l, st, workDir)
+	return push(o, wf.Layout, wf.State, wf.Dir)
 }
 
 // push pushes each in-scope repo's work branch to origin - or, with --main,
@@ -151,20 +113,9 @@ func run(args []string) error {
 // nonzero exit reports them together at the end. Split out from run so tests
 // drive it with a constructed layout/state.
 func push(o *options, l layout.Layout, st *state.State, workDir string) error {
-	// Resolve the in-scope repos.
-	var scope []state.Repo
-	if o.all {
-		scope = st.Repos
-	} else {
-		for _, r := range st.Repos {
-			if r.Name == o.repo {
-				scope = append(scope, r)
-				break
-			}
-		}
-		if len(scope) == 0 {
-			return fmt.Errorf("repo %q is not part of %s", o.repo, st.DisplayName())
-		}
+	scope, err := workfolder.Scope(st, o.repo, o.all)
+	if err != nil {
+		return err
 	}
 
 	var failures []string
@@ -296,15 +247,14 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 		fmt.Printf("%s: %s empty branch %s to origin%s\n", r.Name, verb, r.Branch, forceNote)
 	} else {
 		fmt.Printf("%s: %s %d commit(s) to origin/%s%s\n", r.Name, verb, len(commits), r.Branch, forceNote)
-		printCommits(commits)
+		repo.PrintCommits(os.Stdout, commits)
 	}
 	if o.dryRun {
 		return
 	}
 
 	if err := repo.PushBranchUpstream(wt, r.Branch, o.force); err != nil {
-		msg := err.Error()
-		if !o.force && (strings.Contains(msg, "[rejected]") || strings.Contains(msg, "failed to push")) {
+		if !o.force && repo.PushRejected(err) {
 			fail("%s: push rejected (non-fast-forward); rebase or use -f/--force: %v", r.Name, err)
 		} else {
 			fail("%s: push %s: %v", r.Name, r.Branch, err)
@@ -362,15 +312,14 @@ func pushDefaultBranch(o *options, name, main string, fail func(string, ...any))
 		fmt.Printf("%s: %s %s to origin (already up to date)\n", name, verb, defBranch)
 	default:
 		fmt.Printf("%s: %s %d commit(s) to origin/%s\n", name, verb, len(ahead), defBranch)
-		printCommits(ahead)
+		repo.PrintCommits(os.Stdout, ahead)
 	}
 	if o.dryRun {
 		return
 	}
 
 	if err := repo.PushBranch(main, defBranch); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "[rejected]") || strings.Contains(msg, "failed to push") {
+		if repo.PushRejected(err) {
 			fail("%s: push %s rejected (non-fast-forward); pull %s in %s first: %v", name, defBranch, defBranch, main, err)
 		} else {
 			fail("%s: push %s: %v", name, defBranch, err)
@@ -378,20 +327,4 @@ func pushDefaultBranch(o *options, name, main string, fail func(string, ...any))
 		return
 	}
 	fmt.Printf("%s: pushed %s to origin\n", name, defBranch)
-}
-
-// printCommits lists commits one per line, indented under the repo's
-// would-push/pushing summary line.
-func printCommits(commits []repo.Commit) {
-	for _, c := range commits {
-		fmt.Printf("  %s %s\n", shortSHA(c.SHA), c.Subject)
-	}
-}
-
-// shortSHA abbreviates a commit id for reporting, leaving short ids untouched.
-func shortSHA(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
 }

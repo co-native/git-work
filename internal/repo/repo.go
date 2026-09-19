@@ -2,23 +2,43 @@ package repo
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/co-native/git-work/internal/layout"
 )
 
+// git runs a git command in dir and returns its stdout; a nonzero exit is an
+// error carrying git's stderr.
 func git(dir string, args ...string) (string, error) {
+	out, _, err := gitStatus(dir, args...)
+	return out, err
+}
+
+// gitStatus is git plus the exit code, for the commands whose documented
+// nonzero code is an answer rather than a failure: merge-base --is-ancestor,
+// show-ref --verify and config --get all exit 1 for "no". The code is -1 when
+// git could not run at all.
+func gitStatus(dir string, args ...string) (out string, code int, err error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
+	var outb, errb bytes.Buffer
+	cmd.Stdout = &outb
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+		code = -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		}
+		return "", code, fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
-	return out.String(), nil
+	return outb.String(), 0, nil
 }
 
 // RemoteDefaultRef returns the remote default branch ref (e.g. "origin/main")
@@ -116,7 +136,7 @@ func Clone(url, repoDir string, extraOpts []string) (err error) {
 	if err := os.Rename(tmp, primary); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: ./"+name+"/.git\n"), 0o644); err != nil {
+	if err := layout.WritePrimaryPointer(repoDir, name); err != nil {
 		return err
 	}
 	if _, err := git(primary, "config", "core.worktree", ".."); err != nil {
@@ -165,18 +185,16 @@ func (r PullResult) String() string {
 	return "already up to date"
 }
 
-// PullFFOnly fast-forwards the current branch in dir from its upstream; a
-// pull that would need a merge or rebase (a diverged branch) fails instead
-// of touching the tree. On success the result says whether HEAD moved.
-func PullFFOnly(dir string) (PullResult, error) {
-	before, err := git(dir, "rev-parse", "HEAD")
+// moved runs act and reports whether ref in dir points elsewhere afterwards.
+func moved(dir, ref string, act func() error) (PullResult, error) {
+	before, err := git(dir, "rev-parse", ref)
 	if err != nil {
 		return PullUpToDate, err
 	}
-	if _, err := git(dir, "pull", "--ff-only"); err != nil {
+	if err := act(); err != nil {
 		return PullUpToDate, err
 	}
-	after, err := git(dir, "rev-parse", "HEAD")
+	after, err := git(dir, "rev-parse", ref)
 	if err != nil {
 		return PullUpToDate, err
 	}
@@ -184,6 +202,16 @@ func PullFFOnly(dir string) (PullResult, error) {
 		return PullUpToDate, nil
 	}
 	return PullFastForwarded, nil
+}
+
+// PullFFOnly fast-forwards the current branch in dir from its upstream; a
+// pull that would need a merge or rebase (a diverged branch) fails instead
+// of touching the tree. On success the result says whether HEAD moved.
+func PullFFOnly(dir string) (PullResult, error) {
+	return moved(dir, "HEAD", func() error {
+		_, err := git(dir, "pull", "--ff-only")
+		return err
+	})
 }
 
 // PullBranchFFOnly fast-forwards branch in dir from origin. When branch is
@@ -198,22 +226,21 @@ func PullBranchFFOnly(dir, branch string) (PullResult, error) {
 	if cur, err := CurrentBranch(dir); err == nil && cur == branch {
 		return PullFFOnly(dir)
 	}
-	ref := "refs/heads/" + branch
-	before, err := git(dir, "rev-parse", ref)
+	return moved(dir, "refs/heads/"+branch, func() error {
+		_, err := git(dir, "fetch", "origin", branch+":"+branch)
+		return err
+	})
+}
+
+// PullDefaultBranch fast-forwards mainDir's default branch from origin,
+// whatever branch the primary has checked out (see PullBranchFFOnly): the
+// step every command that freshens a primary performs.
+func PullDefaultBranch(mainDir string) (PullResult, error) {
+	def, err := DefaultBranchName(mainDir)
 	if err != nil {
 		return PullUpToDate, err
 	}
-	if _, err := git(dir, "fetch", "origin", branch+":"+branch); err != nil {
-		return PullUpToDate, err
-	}
-	after, err := git(dir, "rev-parse", ref)
-	if err != nil {
-		return PullUpToDate, err
-	}
-	if strings.TrimSpace(after) == strings.TrimSpace(before) {
-		return PullUpToDate, nil
-	}
-	return PullFastForwarded, nil
+	return PullBranchFFOnly(mainDir, def)
 }
 
 // Checkout checks out branch in dir.
@@ -307,17 +334,14 @@ func CommonGitDir(dir string) (string, error) {
 // unset (`git config --get` exits 1 for a missing key; any other failure is
 // a real error).
 func CoreWorktree(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "config", "--get", "core.worktree")
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-			return "", nil
-		}
-		return "", fmt.Errorf("git config --get core.worktree: %v: %s", err, strings.TrimSpace(errb.String()))
+	out, code, err := gitStatus(dir, "config", "--get", "core.worktree")
+	if code == 1 {
+		return "", nil
 	}
-	return strings.TrimSpace(out.String()), nil
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // SetCoreWorktree sets the repo's core.worktree config value (the managed
@@ -366,17 +390,11 @@ func HasUnpushedCommits(dir string) (bool, error) {
 // merge-base exits 1 for "not an ancestor"; any other failure (unknown ref,
 // corrupt repo) is returned as an error instead of reading as "not merged".
 func IsMergedInto(mainDir, branch, target string) (bool, error) {
-	cmd := exec.Command("git", "-C", mainDir, "merge-base", "--is-ancestor", branch, target)
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %v: %s",
-			branch, target, err, strings.TrimSpace(errb.String()))
+	_, code, err := gitStatus(mainDir, "merge-base", "--is-ancestor", branch, target)
+	if code == 1 {
+		return false, nil
 	}
-	return true, nil
+	return err == nil, err
 }
 
 // IsPatchEquivalent reports whether target already contains the changes of
@@ -497,25 +515,20 @@ func cherryFullyMerged(cherryOut string) bool {
 // mergeAbsorbedInto reports whether merging branch into target contributes
 // nothing: an in-memory three-way merge (git merge-tree --write-tree, git
 // >=2.38) whose result tree equals target's tree. merge-tree exits 1 on
-// conflict, which the git() helper turns into an error, so this uses the
-// exec.ExitError code-1 pattern from IsMergedInto but never bubbles: a
-// conflict, a too-old git without --write-tree, or any other failure all
-// report (false, nil) so the caller falls back to the other signals. A
-// bubbled error would reach done's warnProblem and add a spurious problem to
-// a genuinely-unmerged branch.
+// conflict, and this never bubbles any failure: a conflict, a too-old git
+// without --write-tree, or any other error all report (false, nil) so the
+// caller falls back to the other signals. A bubbled error would reach done's
+// warnProblem and add a spurious problem to a genuinely-unmerged branch.
 func mergeAbsorbedInto(mainDir, branch, target string) (bool, error) {
-	cmd := exec.Command("git", "-C", mainDir, "merge-tree", "--write-tree", target, branch)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
+	tree, err := git(mainDir, "merge-tree", "--write-tree", target, branch)
+	if err != nil {
 		return false, nil
 	}
 	targetTree, err := git(mainDir, "rev-parse", target+"^{tree}")
 	if err != nil {
 		return false, nil
 	}
-	return strings.TrimSpace(out.String()) == strings.TrimSpace(targetTree), nil
+	return strings.TrimSpace(tree) == strings.TrimSpace(targetTree), nil
 }
 
 // A Commit is one commit identified for integrating: its full SHA plus the
@@ -523,6 +536,40 @@ func mergeAbsorbedInto(mainDir, branch, target string) (bool, error) {
 type Commit struct {
 	SHA     string
 	Subject string
+}
+
+// Short abbreviates the commit id for reporting, leaving short ids untouched.
+func (c Commit) Short() string {
+	if len(c.SHA) > 12 {
+		return c.SHA[:12]
+	}
+	return c.SHA
+}
+
+// PrintCommits lists commits one per line, indented under the per-repo
+// summary line the caller printed.
+func PrintCommits(w io.Writer, commits []Commit) {
+	for _, c := range commits {
+		fmt.Fprintf(w, "  %s %s\n", c.Short(), c.Subject)
+	}
+}
+
+// commits resolves shas to Commits with their subjects in one git call,
+// preserving the order given. Nil for no shas.
+func commits(dir string, shas []string) ([]Commit, error) {
+	if len(shas) == 0 {
+		return nil, nil
+	}
+	out, err := git(dir, append([]string{"log", "--no-walk=unsorted", "--format=%H%x00%s"}, shas...)...)
+	if err != nil {
+		return nil, err
+	}
+	var out2 []Commit
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		sha, subject, _ := strings.Cut(line, "\x00")
+		out2 = append(out2, Commit{SHA: sha, Subject: subject})
+	}
+	return out2, nil
 }
 
 // CommitsNotIn returns the commits on branch not yet patch-present in
@@ -543,15 +590,7 @@ func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 		return nil, err
 	}
 	plus, _ := cherryUnmerged(out)
-	commits := make([]Commit, 0, len(plus))
-	for _, sha := range plus {
-		subject, err := git(mainDir, "show", "-s", "--format=%s", sha)
-		if err != nil {
-			return nil, err
-		}
-		commits = append(commits, Commit{SHA: sha, Subject: strings.TrimSpace(subject)})
-	}
-	return commits, nil
+	return commits(mainDir, plus)
 }
 
 // CommitsAhead returns the commits on branch that are not on target - plain
@@ -565,15 +604,7 @@ func CommitsAhead(mainDir, branch, target string) ([]Commit, error) {
 	if err != nil {
 		return nil, err
 	}
-	var commits []Commit
-	for _, sha := range strings.Fields(out) {
-		subject, err := git(mainDir, "show", "-s", "--format=%s", sha)
-		if err != nil {
-			return nil, err
-		}
-		commits = append(commits, Commit{SHA: sha, Subject: strings.TrimSpace(subject)})
-	}
-	return commits, nil
+	return commits(mainDir, strings.Fields(out))
 }
 
 // CherryPickStatus classifies CherryPick's outcome.
@@ -600,7 +631,7 @@ func CherryPick(dir, sha string) (CherryPickStatus, error) {
 	if err == nil {
 		return CherryPickOK, nil
 	}
-	inProgress, perr := cherryPickInProgress(dir)
+	inProgress, perr := gitPathExists(dir, "CHERRY_PICK_HEAD")
 	if perr != nil {
 		return CherryPickOK, perr
 	}
@@ -622,31 +653,20 @@ func CherryPick(dir, sha string) (CherryPickStatus, error) {
 	return CherryPickEmpty, nil
 }
 
-// cherryPickInProgress reports whether dir has a cherry-pick in progress
-// (CHERRY_PICK_HEAD present). Mirrors rebaseInProgress by stating the git-path
-// directly rather than looking for a sequencer dir a single-commit pick never
-// creates.
-func cherryPickInProgress(dir string) (bool, error) {
-	out, err := git(dir, "rev-parse", "--git-path", "CHERRY_PICK_HEAD")
-	if err != nil {
-		return false, err
-	}
-	p := strings.TrimSpace(out)
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(dir, p)
-	}
-	if _, err := os.Stat(p); err == nil {
-		return true, nil
-	}
-	return false, nil
-}
-
 // PushBranch runs `git push origin <branch>` from mainDir (mirrors
 // DeleteRemoteBranch). No --force: fast-forward safety is the remote's to
 // enforce.
 func PushBranch(mainDir, branch string) error {
 	_, err := git(mainDir, "push", "origin", branch)
 	return err
+}
+
+// PushRejected reports whether err, from PushBranch or PushBranchUpstream, is
+// the remote refusing a non-fast-forward update rather than any other failure.
+// Git has no exit code for the distinction, so this reads its message.
+func PushRejected(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "[rejected]") || strings.Contains(msg, "failed to push")
 }
 
 // PushBranchUpstream runs `git push -u origin <branch>` from dir (a worktree),
@@ -715,32 +735,47 @@ func RebaseOnto(dir, target string) (RebaseStatus, error) {
 
 // rebaseInProgress reports whether dir has a rebase in progress.
 func rebaseInProgress(dir string) (bool, error) {
-	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		exists, err := gitPathExists(dir, name)
-		if err != nil {
-			return false, err
-		}
-		if exists {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// gitPathExists reports whether a path inside dir's git dir exists, resolving
-// it with `git rev-parse --git-path` so linked worktrees (whose git dir is not
-// dir/.git) answer for themselves.
-func gitPathExists(dir, name string) (bool, error) {
-	out, err := git(dir, "rev-parse", "--git-path", name)
+	exists, err := gitPathsExist(dir, "rebase-merge", "rebase-apply")
 	if err != nil {
 		return false, err
 	}
-	p := strings.TrimSpace(out)
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(dir, p)
+	return exists[0] || exists[1], nil
+}
+
+// gitPathExists reports whether a path inside dir's git dir exists.
+func gitPathExists(dir, name string) (bool, error) {
+	exists, err := gitPathsExist(dir, name)
+	if err != nil {
+		return false, err
 	}
-	_, statErr := os.Stat(p)
-	return statErr == nil, nil
+	return exists[0], nil
+}
+
+// gitPathsExist reports, per name, whether that path inside dir's git dir
+// exists. The names resolve in one `git rev-parse --git-path` call, so linked
+// worktrees (whose git dir is not dir/.git) answer for themselves.
+func gitPathsExist(dir string, names ...string) ([]bool, error) {
+	args := []string{"rev-parse"}
+	for _, name := range names {
+		args = append(args, "--git-path", name)
+	}
+	out, err := git(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	paths := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(paths) != len(names) {
+		return nil, fmt.Errorf("git rev-parse --git-path: %d paths for %d names", len(paths), len(names))
+	}
+	exists := make([]bool, len(names))
+	for i, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		_, statErr := os.Stat(p)
+		exists[i] = statErr == nil
+	}
+	return exists, nil
 }
 
 // HeadState classifies what a worktree's HEAD points at.
@@ -784,12 +819,16 @@ func ReadHead(dir string) (Head, error) {
 	// symbolic-ref also fails when dir is not a repository at all; probing
 	// the git dir below surfaces that as a real error rather than letting it
 	// masquerade as a detached HEAD.
-	for _, op := range detachingOps {
-		exists, perr := gitPathExists(dir, op.path)
-		if perr != nil {
-			return Head{}, perr
-		}
-		if exists {
+	names := make([]string, len(detachingOps))
+	for i, op := range detachingOps {
+		names[i] = op.path
+	}
+	exists, perr := gitPathsExist(dir, names...)
+	if perr != nil {
+		return Head{}, perr
+	}
+	for i, op := range detachingOps {
+		if exists[i] {
 			return Head{State: HeadInOperation, Operation: op.name, Remedy: op.remedy}, nil
 		}
 	}
@@ -906,14 +945,11 @@ func DeleteRemoteBranch(mainDir, branch string) error {
 // refExists reports whether a fully-qualified ref exists. show-ref exits 1
 // for "no such ref"; any other failure is a real error.
 func refExists(mainDir, ref string) (bool, error) {
-	cmd := exec.Command("git", "-C", mainDir, "show-ref", "--verify", "--quiet", ref)
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("git show-ref %s: %v", ref, err)
+	_, code, err := gitStatus(mainDir, "show-ref", "--verify", "--quiet", ref)
+	if code == 1 {
+		return false, nil
 	}
-	return true, nil
+	return err == nil, err
 }
 
 // CheckBranchArg rejects a --branch value spelled as a remote-tracking ref.

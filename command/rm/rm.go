@@ -7,17 +7,13 @@ package rm
 import (
 	"flag"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
-	"github.com/co-native/git-work/internal/config"
-	"github.com/co-native/git-work/internal/state"
 	"github.com/co-native/git-work/internal/teardown"
 	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -59,10 +55,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers rm's flags against o. It is separate from parseFlags so
 // the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("rm")
 	fs.BoolVar(&o.deleteLocal, "delete-local", false, "delete the local branch")
 	fs.BoolVar(&o.deleteRemote, "delete-remote", false, "delete the remote branch")
 	fs.BoolVar(&o.force, "force", false, "override safety-check problems")
@@ -108,31 +101,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
+	st, workDir, l := wf.State, wf.Dir, wf.Layout
 
-	var r state.Repo
-	found := false
-	for _, existing := range st.Repos {
-		if existing.Name == o.repo {
-			r, found = existing, true
-			break
-		}
-	}
+	r, found := st.Repo(o.repo)
 	if !found {
 		// Naming a repo the folder does not hold is a malformed invocation,
 		// not work that failed: the operator picked the wrong name.
@@ -141,9 +116,6 @@ func run(args []string) error {
 
 	// Interactive: ask what to do, exactly like `done`.
 	if !o.nonInteractive {
-		if !tui.IsInteractive() {
-			return tui.ErrNoTTY
-		}
 		if o.deleteLocal, err = tui.Confirm("Delete local branch?", false); err != nil {
 			return err
 		}
@@ -159,12 +131,8 @@ func run(args []string) error {
 		NoFetch:      o.noFetch,
 	}
 
-	problems := teardown.CheckRepo(to, l, r, workDir)
-	if len(problems) > 0 {
-		if !o.force {
-			return fmt.Errorf("aborting (most of these can be overridden with --force):\n  %s", strings.Join(problems, "\n  "))
-		}
-		fmt.Fprintf(os.Stderr, "git-work: proceeding despite %d problem(s) (--force)\n", len(problems))
+	if err := teardown.Gate(teardown.CheckRepo(to, l, r, workDir), o.force); err != nil {
+		return err
 	}
 
 	// TeardownRepo drops r from st and saves only on full success; on
@@ -175,28 +143,9 @@ func run(args []string) error {
 		return fmt.Errorf("rm failed:\n  %s", strings.Join(failures, "\n  "))
 	}
 
-	// Re-aggregate README.md + CLAUDE.md managed blocks from the remaining
-	// repos (duplicates add.go's aggregation - the template.* funcs are
-	// exported for exactly this reuse).
-	repos := make([]string, len(st.Repos))
-	refs := make([]template.RepoRef, len(st.Repos))
-	for i, rr := range st.Repos {
-		repos[i] = rr.Name
-		refs[i] = template.RepoRef{Name: rr.Name, Branch: rr.Branch}
-	}
-	if err := template.WriteManaged(filepath.Join(workDir, "README.md"),
-		template.Readme(st.DisplayName(), st.Branch, repos)); err != nil {
-		return err
-	}
-	if err := template.WriteManaged(filepath.Join(workDir, "CLAUDE.md"),
-		template.AggregateClaude(template.ClaudeInput{
-			ReposRoot:   l.ReposRoot,
-			OverlayPath: config.OverlayPath(),
-			TicketID:    st.TicketID,
-			Title:       st.Title,
-			Branch:      st.Branch,
-			Repos:       refs,
-		})); err != nil {
+	// Re-aggregate the README.md and CLAUDE.md managed blocks from the
+	// repos that remain.
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, nil); err != nil {
 		return err
 	}
 

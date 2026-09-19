@@ -19,7 +19,9 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -129,9 +131,9 @@ func (c *Command) Render() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// subName is the last word of a subcommand's Name, i.e. how it is typed within
+// SubName is the last word of a subcommand's Name, i.e. how it is typed within
 // its group: "config set" -> "set".
-func (c *Command) subName() string {
+func (c *Command) SubName() string {
 	if i := strings.LastIndex(c.Name, " "); i >= 0 {
 		return c.Name[i+1:]
 	}
@@ -145,7 +147,7 @@ func indexBody(cmds []*Command, pad string) string {
 	rows := make([]row, 0, len(cmds))
 	width := 0
 	for _, c := range cmds {
-		left := c.subName()
+		left := c.SubName()
 		if c.Args != "" {
 			left += " " + c.Args
 		}
@@ -176,7 +178,7 @@ func Index(title, usageLine string, cmds []*Command) string {
 // returns nil when there is no such subcommand.
 func Lookup(cmds []*Command, name string) *Command {
 	for _, c := range cmds {
-		if c.subName() == name {
+		if c.SubName() == name {
 			return c
 		}
 	}
@@ -187,8 +189,104 @@ func Lookup(cmds []*Command, name string) *Command {
 func Names(cmds []*Command) []string {
 	out := make([]string, 0, len(cmds))
 	for _, c := range cmds {
-		out = append(out, c.subName())
+		out = append(out, c.SubName())
 	}
 	sort.Strings(out)
 	return out
+}
+
+// NewFlagSet returns the FlagSet every command registers its flags on. Parse
+// errors are reported by Fail with the command's own usage block, so the flag
+// package's own output is discarded rather than dumping a second flag table.
+func NewFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+// ParseScope parses the arguments of a command whose scope is `<repo> | --all`
+// and whose flags are all boolean, so the single positional may appear
+// anywhere on the line: leading-dash tokens are partitioned out and parsed
+// against fs, which must already register --all onto all. It deliberately
+// does not reject a leading `-` first argument, so `push --all` parses. The
+// result is the named repo, or "" when --all was given; exactly one of the two
+// is guaranteed.
+func ParseScope(fs *flag.FlagSet, all *bool, args []string) (string, error) {
+	var flagArgs, positional []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+		} else {
+			positional = append(positional, a)
+		}
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return "", Usagef("%v", err)
+	}
+	if len(positional) > 1 {
+		return "", Usagef("give at most one <repo>")
+	}
+	switch {
+	case *all && len(positional) == 1:
+		return "", Usagef("give a <repo> or --all, not both")
+	case !*all && len(positional) == 0:
+		return "", Usagef("give a <repo> or --all")
+	}
+	if len(positional) == 1 {
+		return positional[0], nil
+	}
+	return "", nil
+}
+
+// CommaList splits a comma-separated flag value into its non-empty, trimmed
+// entries; an empty value yields nil.
+func CommaList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// RunGroup dispatches a group command (`git work repo <sub>`, `git work config
+// <sub>`): the bare help verb, `help <sub>`, an unknown subcommand, and `<sub>
+// -h` are all answered here, so run only ever sees a listed subcommand and
+// arguments that are not a help request. It returns the process exit code.
+//
+// A group holds a verb in the first slot, so the bare word "help" is
+// unambiguous here in a way it never is for a leaf command's positionals.
+// Help is intercepted before run, so `git work repo list -h` prints list's
+// usage instead of listing repos; Wanted stops scanning at the first `--`,
+// which is what keeps `repo clone -- <repo>`'s git-clone option space opaque.
+func RunGroup(group *Command, args []string, run func(sub *Command, rest []string) error) int {
+	if len(args) == 0 {
+		return FailText(Usagef("give a subcommand"), group.Render())
+	}
+	name, rest := args[0], args[1:]
+	unknown := func(name string) int {
+		return FailText(Usagef("unknown %s subcommand %q", group.Name, name), group.Render())
+	}
+	if IsHelpVerb(name) {
+		if len(rest) == 0 {
+			return HelpText(group.Render())
+		}
+		sub := Lookup(group.Subs, rest[0])
+		if sub == nil {
+			return unknown(rest[0])
+		}
+		return Help(sub)
+	}
+	sub := Lookup(group.Subs, name)
+	if sub == nil {
+		return unknown(name)
+	}
+	if Wanted(rest) {
+		return Help(sub)
+	}
+	if err := run(sub, rest); err != nil {
+		return Fail(err, sub)
+	}
+	return OK
 }

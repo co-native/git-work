@@ -37,37 +37,7 @@ var runners = map[string]func([]string) error{
 // Run dispatches `git work repo <subcommand>`; it prints any error to stderr
 // and returns the process exit code.
 func Run(args []string) int {
-	if len(args) == 0 {
-		return cli.FailText(cli.Usagef("give a subcommand"), Cmd.Render())
-	}
-	name, rest := args[0], args[1:]
-
-	// A group holds a verb in the first slot, so the bare word "help" is
-	// unambiguous here in a way it never is for a leaf command's positionals.
-	if cli.IsHelpVerb(name) {
-		if len(rest) == 0 {
-			return cli.HelpText(Cmd.Render())
-		}
-		sub := cli.Lookup(Cmd.Subs, rest[0])
-		if sub == nil {
-			return cli.FailText(cli.Usagef("unknown repo subcommand %q", rest[0]), Cmd.Render())
-		}
-		return cli.Help(sub)
-	}
-
-	sub := cli.Lookup(Cmd.Subs, name)
-	if sub == nil {
-		return cli.FailText(cli.Usagef("unknown repo subcommand %q", name), Cmd.Render())
-	}
-	// Help is intercepted before the subcommand's run function, so
-	// `git work repo list -h` prints list's usage instead of listing repos.
-	// cli.Wanted stops scanning at the first `--`, which is what keeps
-	// `repo clone -- <repo>`'s git-clone option space opaque.
-	if cli.Wanted(rest) {
-		return cli.Help(sub)
-	}
-	if err := runners[name](rest); err != nil {
-		return cli.Fail(err, sub)
-	}
-	return cli.OK
+	return cli.RunGroup(Cmd, args, func(sub *cli.Command, rest []string) error {
+		return runners[sub.SubName()](rest)
+	})
 }

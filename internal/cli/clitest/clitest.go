@@ -143,15 +143,8 @@ func CheckGroup(t *testing.T, cmd *cli.Command, subs []*cli.Command) {
 		t.Errorf("group lists %d subcommands but %d are dispatchable", len(cmd.Subs), len(subs))
 	}
 	for _, s := range subs {
-		if cli.Lookup(cmd.Subs, lastWord(s.Name)) == nil {
+		if cli.Lookup(cmd.Subs, s.SubName()) == nil {
 			t.Errorf("subcommand %q is dispatchable but absent from the group's listing", s.Name)
 		}
 	}
-}
-
-func lastWord(s string) string {
-	if i := strings.LastIndex(s, " "); i >= 0 {
-		return s[i+1:]
-	}
-	return s
 }

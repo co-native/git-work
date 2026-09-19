@@ -36,11 +36,9 @@ func Resolve(provs []config.Provider, id string) (Match, error) {
 			def = p
 		}
 		for _, pat := range p.Patterns {
-			expr := pat.Regex
+			expr := "(?i)" + pat.Regex
 			if pat.Prefix != "" {
 				expr = prefixRegex(pat.Prefix)
-			} else {
-				expr = "(?i)" + expr
 			}
 			re, err := regexp.Compile(expr)
 			if err != nil {

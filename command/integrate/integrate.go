@@ -3,7 +3,6 @@ package integrate
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -56,10 +56,7 @@ var Cmd = &cli.Command{
 // newFlagSet registers integrate's flags against o. It is separate from parseFlags
 // so the conformance test can compare the registered flags with Cmd's.
 func newFlagSet(o *options) *flag.FlagSet {
-	fs := flag.NewFlagSet("integrate", flag.ContinueOnError)
-	// Errors are reported by cli.Fail with our own usage block; Go's flag
-	// package would otherwise dump its flag table too.
-	fs.SetOutput(io.Discard)
+	fs := cli.NewFlagSet("integrate")
 	fs.BoolVar(&o.all, "all", false, "integrate every repo in the work folder")
 	fs.BoolVar(&o.all, "a", false, "shorthand for --all")
 	fs.BoolVar(&o.multi, "multi", false, "allow integrating a repo with 2+ un-integrated commits")
@@ -70,39 +67,16 @@ func newFlagSet(o *options) *flag.FlagSet {
 	return fs
 }
 
-// parseFlags parses `git work integrate` arguments. Every flag is boolean, so the
-// single positional <repo> may appear anywhere on the line; leading-dash
-// tokens are partitioned out as flags (this deliberately does NOT reject a
-// leading `-` first arg, so `integrate --all` parses).
+// parseFlags parses `git work integrate` arguments: the shared `<repo> | --all`
+// scope (see cli.ParseScope) plus integrate's own flags.
 //
 // Help is handled by Run before this is reached, so -h/--help never appears
 // here.
 func parseFlags(args []string) (*options, error) {
 	o := &options{}
-	fs := newFlagSet(o)
-
-	var flagArgs, positional []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a)
-		} else {
-			positional = append(positional, a)
-		}
-	}
-	if err := fs.Parse(flagArgs); err != nil {
-		return nil, cli.Usagef("%v", err)
-	}
-	if len(positional) > 1 {
-		return nil, cli.Usagef("give at most one <repo>")
-	}
-	switch {
-	case o.all && len(positional) == 1:
-		return nil, cli.Usagef("give a <repo> or --all, not both")
-	case !o.all && len(positional) == 0:
-		return nil, cli.Usagef("give a <repo> or --all")
-	}
-	if len(positional) == 1 {
-		o.repo = positional[0]
+	var err error
+	if o.repo, err = cli.ParseScope(newFlagSet(o), &o.all, args); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -144,48 +118,23 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	wf, err := workfolder.Load()
 	if err != nil {
 		return err
 	}
-	st, workDir, err := state.FindUp(cwd)
-	if err != nil {
+	if err := wf.Config.Validate(); err != nil {
 		return err
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
-	if err != nil {
-		return err
-	}
-	return integrate(o, cfg, l, st, workDir)
+	return integrate(o, wf.Config, wf.Layout, wf.State, wf.Dir)
 }
 
 // integrate runs the pre-flight over the whole in-scope set, then (only if it all
 // passes) the cherry-pick transfer. Split out from run so tests drive it with
 // a constructed config/layout/state instead of the global config.
 func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State, workDir string) error {
-	// Resolve the in-scope repos.
-	var scope []state.Repo
-	if o.all {
-		scope = st.Repos
-	} else {
-		for _, r := range st.Repos {
-			if r.Name == o.repo {
-				scope = append(scope, r)
-				break
-			}
-		}
-		if len(scope) == 0 {
-			// Naming a repo the work folder does not hold is a malformed
-			// invocation, not a failed integration: nothing was attempted.
-			return cli.Usagef("repo %q is not part of %s", o.repo, st.DisplayName())
-		}
+	scope, err := workfolder.Scope(st, o.repo, o.all)
+	if err != nil {
+		return err
 	}
 
 	// Pre-flight: fully atomic. Collect violations across the whole set; a
@@ -193,158 +142,19 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 	// nothing to integrate (missing branch/worktree) are skipped, not violations.
 	var targets []target
 	var violations []string
-	violate := func(format string, a ...any) {
-		violations = append(violations, fmt.Sprintf(format, a...))
-	}
 	for _, r := range scope {
-		// A PR-only repo is a standing policy, not an error state, so how it
-		// is reported depends on how the repo entered scope. Under --all,
-		// declining it is the appropriate thing to do and the run still
-		// succeeds; naming it means asking for something policy forbids, and
-		// answering that with a silent exit 0 would be the worst outcome.
-		// Both paths run before any git work, and both are shared with
-		// --dry-run, so -n predicts the real run's exit code.
-		if cfg.Integration(r.Name) == config.IntegrationPR {
-			if o.all {
-				fmt.Fprintf(os.Stderr, "git-work: %s: integrates through a pull request; skipping\n", r.Name)
-				continue
-			}
-			violate("%s: integrates through a pull request (integration: pr); "+
-				"push the branch and open one, or change the route with "+
-				"`git work config set repos.%s.integration local`", r.Name, r.Name)
-			continue
+		t, violation := preflight(o, cfg, l, r, workDir)
+		if violation != "" {
+			violations = append(violations, violation)
 		}
-
-		main, err := l.RepoMain(r.Name)
-		if err != nil {
-			violate("%s: %v", r.Name, err)
-			continue
+		if t != nil {
+			targets = append(targets, *t)
 		}
-
-		// A gone worktree or a branch that no longer exists locally means
-		// there is nothing to integrate: skip with a note rather than erroring.
-		wt := filepath.Join(workDir, r.Name)
-		if _, err := os.Stat(wt); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "git-work: %s: worktree already removed; nothing to integrate\n", r.Name)
-			continue
-		}
-
-		// The cherry-picks take their commits from r.Branch, so a worktree on
-		// a different branch means the pre-flight would measure one branch
-		// while the operator is working on another. A pre-flight violation,
-		// not a skip: the whole run aborts rather than integrating the wrong branch.
-		if msg, err := repo.WorktreeBranchProblem(wt, r.Branch); err != nil {
-			violate("%s: could not check the worktree's branch: %v", r.Name, err)
-			continue
-		} else if msg != "" {
-			violate("%s: %s", r.Name, msg)
-			continue
-		}
-
-		if !o.noFetch {
-			if err := repo.Fetch(main); err != nil {
-				fmt.Fprintf(os.Stderr, "git-work: %s: fetch failed: %v (continuing with local refs)\n", r.Name, err)
-			}
-		}
-
-		exists, err := repo.LocalBranchExists(main, r.Branch)
-		if err != nil {
-			violate("%s: could not check branch %s: %v", r.Name, r.Branch, err)
-			continue
-		}
-		if !exists {
-			fmt.Fprintf(os.Stderr, "git-work: %s: branch %s does not exist locally; nothing to integrate\n", r.Name, r.Branch)
-			continue
-		}
-
-		defBranch, err := repo.DefaultBranchName(main)
-		if err != nil {
-			violate("%s: could not determine default branch: %v", r.Name, err)
-			continue
-		}
-
-		// The primary must be clean and sitting on its default branch so the
-		// cherry-picks integrate where the pre-flight measured them.
-		if dirty, err := repo.HasUncommittedChanges(main); err != nil {
-			violate("%s: could not check for uncommitted changes: %v", r.Name, err)
-			continue
-		} else if dirty {
-			violate("%s: primary clone %s has uncommitted changes", r.Name, main)
-			continue
-		}
-		cur, err := repo.CurrentBranch(main)
-		if err != nil {
-			violate("%s: could not determine checked-out branch: %v", r.Name, err)
-			continue
-		}
-		if cur != defBranch {
-			violate("%s: primary clone %s is on %s, not the default branch %s", r.Name, main, cur, defBranch)
-			continue
-		}
-
-		// Fast-forward the local default branch to origin - a safe, always
-		// desirable mutation; a non-fast-forward is a violation.
-		if _, err := repo.PullBranchFFOnly(main, defBranch); err != nil {
-			violate("%s: could not fast-forward %s to origin/%s: %v", r.Name, defBranch, defBranch, err)
-			continue
-		}
-
-		// Measure against the LOCAL default branch (the cherry-pick target),
-		// not origin/main: integrating without --push leaves local main ahead, and
-		// measuring against origin would re-list already-integrated commits.
-		unintegrated, err := repo.CommitsNotIn(main, r.Branch, defBranch)
-		if err != nil {
-			violate("%s: could not compute un-integrated commits: %v", r.Name, err)
-			continue
-		}
-		// Prefer a fast-forward: possible exactly when the default branch is
-		// an ancestor of the work branch, i.e. nothing integrated on the default
-		// branch since the work branch diverged. The check comes AFTER the
-		// pre-flight fast-forwarded the default branch to origin, so it asks
-		// about the same tip a real transfer would move.
-		//
-		// It is worth preferring because a cherry-pick rewrites the commits:
-		// an already-pushed work branch ends up holding different objects
-		// than the default branch, which is exactly the case `done`'s
-		// patch-equivalence fallback exists to paper over. A fast-forward
-		// keeps the SHAs, so the two genuinely match.
-		//
-		// Computed before the --multi guard so a dry run of a repo that trips
-		// the guard still reports which mechanism it would have used.
-		ff := false
-		if len(unintegrated) > 0 {
-			if ff, err = repo.IsMergedInto(main, defBranch, r.Branch); err != nil {
-				violate("%s: could not check whether %s can fast-forward to %s: %v", r.Name, defBranch, r.Branch, err)
-				continue
-			}
-		}
-
-		// The --multi guard applies to both mechanisms. A fast-forward carries
-		// no per-commit risk, but the guard is about intent - integrating commits
-		// you had forgotten about is the same surprise either way - so the
-		// rule stays one rule.
-		if len(unintegrated) >= 2 && !o.multi {
-			violate("%s: %d un-integrated commits; pass --multi to integrate more than one", r.Name, len(unintegrated))
-			// A dry run still reports what's out there: the commits are
-			// computed, so keep the target for the listing. Violations stay
-			// non-empty, so the transfer can never reach this repo.
-			if o.dryRun {
-				targets = append(targets, target{r: r, main: main, defBranch: defBranch, unintegrated: unintegrated, ff: ff})
-			}
-			continue
-		}
-		targets = append(targets, target{r: r, main: main, defBranch: defBranch, unintegrated: unintegrated, ff: ff})
 	}
 
 	if o.dryRun {
 		for _, t := range targets {
-			if len(t.unintegrated) == 0 {
-				fmt.Printf("%s: already up to date\n", t.r.Name)
-				continue
-			}
-			fmt.Printf("%s: would integrate %d onto %s (%s)\n", t.r.Name, len(t.unintegrated), t.defBranch, mechanism(t.ff))
-			printCommits(t.unintegrated)
-			if o.push {
+			if t.report("would integrate") && o.push {
 				fmt.Printf("%s: would push %s to origin\n", t.r.Name, t.defBranch)
 			}
 		}
@@ -359,40 +169,12 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 
 	// Transfer: only now, with the whole set proven safe, cherry-pick.
 	for _, t := range targets {
-		if len(t.unintegrated) == 0 {
-			fmt.Printf("%s: already up to date\n", t.r.Name)
+		if !t.report("integrating") {
 			continue
 		}
-		fmt.Printf("%s: integrating %d onto %s (%s)\n", t.r.Name, len(t.unintegrated), t.defBranch, mechanism(t.ff))
-		printCommits(t.unintegrated)
-		integrated := 0
-		if t.ff {
-			// A pointer move, so it is atomic and cannot conflict - pre-flight
-			// already established the ancestry --ff-only requires, leaving no
-			// half-transferred state for this path to report.
-			if err := repo.FastForwardTo(t.main, t.r.Branch); err != nil {
-				return fmt.Errorf("%s: fast-forward %s to %s in %s: %v",
-					t.r.Name, t.defBranch, t.r.Branch, t.main, err)
-			}
-			integrated = len(t.unintegrated)
-		} else {
-			for _, c := range t.unintegrated {
-				status, err := repo.CherryPick(t.main, c.SHA)
-				if err != nil {
-					return fmt.Errorf("%s: cherry-pick %s: %v", t.r.Name, shortSHA(c.SHA), err)
-				}
-				switch status {
-				case repo.CherryPickOK:
-					integrated++
-				case repo.CherryPickEmpty:
-					// Patch already present; the pick was auto-skipped internally.
-				case repo.CherryPickConflict:
-					return fmt.Errorf("%s: cherry-pick of %s conflicted in %s; the pick is in progress. "+
-						"Resolve it there, or run `git cherry-pick --abort` in %s to restore %s. "+
-						"Halted before integrating any remaining repos.",
-						t.r.Name, shortSHA(c.SHA), t.main, t.main, t.defBranch)
-				}
-			}
+		integrated, err := t.transfer()
+		if err != nil {
+			return err
 		}
 		if integrated == 0 {
 			fmt.Printf("%s: already up to date\n", t.r.Name)
@@ -413,18 +195,190 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 	return nil
 }
 
-// printCommits lists commits one per line, indented under the repo's
-// would-integrate/integrating summary line.
-func printCommits(commits []repo.Commit) {
-	for _, c := range commits {
-		fmt.Printf("  %s %s\n", shortSHA(c.SHA), c.Subject)
+// preflight runs one repo's pre-flight. It returns the target when the repo
+// is ready to transfer, and a violation when something forbids the run. A
+// repo with nothing to integrate yields neither, with a note on stderr. Both
+// can be set at once: a repo that trips the --multi guard under --dry-run
+// keeps its target so the listing still shows the commits, while the
+// violation keeps the transfer from ever reaching it.
+func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, workDir string) (*target, string) {
+	violate := func(format string, a ...any) (*target, string) {
+		return nil, fmt.Sprintf(format, a...)
 	}
+	skip := func(format string, a ...any) (*target, string) {
+		fmt.Fprintf(os.Stderr, "git-work: "+format+"\n", a...)
+		return nil, ""
+	}
+
+	// A PR-only repo is a standing policy, not an error state, so how it
+	// is reported depends on how the repo entered scope. Under --all,
+	// declining it is the appropriate thing to do and the run still
+	// succeeds; naming it means asking for something policy forbids, and
+	// answering that with a silent exit 0 would be the worst outcome.
+	// Both paths run before any git work, and both are shared with
+	// --dry-run, so -n predicts the real run's exit code.
+	if cfg.Integration(r.Name) == config.IntegrationPR {
+		if o.all {
+			return skip("%s: integrates through a pull request; skipping", r.Name)
+		}
+		return violate("%s: integrates through a pull request (integration: pr); "+
+			"push the branch and open one, or change the route with "+
+			"`git work config set repos.%s.integration local`", r.Name, r.Name)
+	}
+
+	main, err := l.RepoMain(r.Name)
+	if err != nil {
+		return violate("%s: %v", r.Name, err)
+	}
+
+	// A gone worktree or a branch that no longer exists locally means
+	// there is nothing to integrate: skip with a note rather than erroring.
+	wt := filepath.Join(workDir, r.Name)
+	if _, err := os.Stat(wt); os.IsNotExist(err) {
+		return skip("%s: worktree already removed; nothing to integrate", r.Name)
+	}
+
+	// The cherry-picks take their commits from r.Branch, so a worktree on
+	// a different branch means the pre-flight would measure one branch
+	// while the operator is working on another. A pre-flight violation,
+	// not a skip: the whole run aborts rather than integrating the wrong branch.
+	if msg, err := repo.WorktreeBranchProblem(wt, r.Branch); err != nil {
+		return violate("%s: could not check the worktree's branch: %v", r.Name, err)
+	} else if msg != "" {
+		return violate("%s: %s", r.Name, msg)
+	}
+
+	if !o.noFetch {
+		if err := repo.Fetch(main); err != nil {
+			fmt.Fprintf(os.Stderr, "git-work: %s: fetch failed: %v (continuing with local refs)\n", r.Name, err)
+		}
+	}
+
+	exists, err := repo.LocalBranchExists(main, r.Branch)
+	if err != nil {
+		return violate("%s: could not check branch %s: %v", r.Name, r.Branch, err)
+	}
+	if !exists {
+		return skip("%s: branch %s does not exist locally; nothing to integrate", r.Name, r.Branch)
+	}
+
+	defBranch, err := repo.DefaultBranchName(main)
+	if err != nil {
+		return violate("%s: could not determine default branch: %v", r.Name, err)
+	}
+
+	// The primary must be clean and sitting on its default branch so the
+	// cherry-picks integrate where the pre-flight measured them.
+	if dirty, err := repo.HasUncommittedChanges(main); err != nil {
+		return violate("%s: could not check for uncommitted changes: %v", r.Name, err)
+	} else if dirty {
+		return violate("%s: primary clone %s has uncommitted changes", r.Name, main)
+	}
+	cur, err := repo.CurrentBranch(main)
+	if err != nil {
+		return violate("%s: could not determine checked-out branch: %v", r.Name, err)
+	}
+	if cur != defBranch {
+		return violate("%s: primary clone %s is on %s, not the default branch %s", r.Name, main, cur, defBranch)
+	}
+
+	// Fast-forward the local default branch to origin - a safe, always
+	// desirable mutation; a non-fast-forward is a violation.
+	if _, err := repo.PullBranchFFOnly(main, defBranch); err != nil {
+		return violate("%s: could not fast-forward %s to origin/%s: %v", r.Name, defBranch, defBranch, err)
+	}
+
+	// Measure against the LOCAL default branch (the cherry-pick target),
+	// not origin/main: integrating without --push leaves local main ahead, and
+	// measuring against origin would re-list already-integrated commits.
+	unintegrated, err := repo.CommitsNotIn(main, r.Branch, defBranch)
+	if err != nil {
+		return violate("%s: could not compute un-integrated commits: %v", r.Name, err)
+	}
+	// Prefer a fast-forward: possible exactly when the default branch is
+	// an ancestor of the work branch, i.e. nothing integrated on the default
+	// branch since the work branch diverged. The check comes AFTER the
+	// pre-flight fast-forwarded the default branch to origin, so it asks
+	// about the same tip a real transfer would move.
+	//
+	// It is worth preferring because a cherry-pick rewrites the commits:
+	// an already-pushed work branch ends up holding different objects
+	// than the default branch, which is exactly the case `done`'s
+	// patch-equivalence fallback exists to paper over. A fast-forward
+	// keeps the SHAs, so the two genuinely match.
+	//
+	// Computed before the --multi guard so a dry run of a repo that trips
+	// the guard still reports which mechanism it would have used.
+	ff := false
+	if len(unintegrated) > 0 {
+		if ff, err = repo.IsMergedInto(main, defBranch, r.Branch); err != nil {
+			return violate("%s: could not check whether %s can fast-forward to %s: %v", r.Name, defBranch, r.Branch, err)
+		}
+	}
+	t := &target{r: r, main: main, defBranch: defBranch, unintegrated: unintegrated, ff: ff}
+
+	// The --multi guard applies to both mechanisms. A fast-forward carries
+	// no per-commit risk, but the guard is about intent - integrating commits
+	// you had forgotten about is the same surprise either way - so the
+	// rule stays one rule.
+	if len(unintegrated) >= 2 && !o.multi {
+		violation := fmt.Sprintf("%s: %d un-integrated commits; pass --multi to integrate more than one", r.Name, len(unintegrated))
+		// A dry run still reports what's out there: the commits are
+		// computed, so keep the target for the listing. Violations stay
+		// non-empty, so the transfer can never reach this repo.
+		if o.dryRun {
+			return t, violation
+		}
+		return nil, violation
+	}
+	return t, ""
 }
 
-// shortSHA abbreviates a commit id for reporting, leaving short ids untouched.
-func shortSHA(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
+// report prints the repo's summary line under verb ("would integrate",
+// "integrating") and lists the commits, or says the repo is already up to
+// date. It reports whether there is anything to transfer.
+func (t target) report(verb string) bool {
+	if len(t.unintegrated) == 0 {
+		fmt.Printf("%s: already up to date\n", t.r.Name)
+		return false
 	}
-	return sha
+	fmt.Printf("%s: %s %d onto %s (%s)\n", t.r.Name, verb, len(t.unintegrated), t.defBranch, mechanism(t.ff))
+	repo.PrintCommits(os.Stdout, t.unintegrated)
+	return true
+}
+
+// transfer moves the repo's un-integrated commits onto its default branch by
+// the mechanism pre-flight chose and returns how many landed. A cherry-pick
+// that conflicts is left in progress and returned as an error naming the
+// way out; the caller halts before touching any remaining repo.
+func (t target) transfer() (int, error) {
+	if t.ff {
+		// A pointer move, so it is atomic and cannot conflict - pre-flight
+		// already established the ancestry --ff-only requires, leaving no
+		// half-transferred state for this path to report.
+		if err := repo.FastForwardTo(t.main, t.r.Branch); err != nil {
+			return 0, fmt.Errorf("%s: fast-forward %s to %s in %s: %v",
+				t.r.Name, t.defBranch, t.r.Branch, t.main, err)
+		}
+		return len(t.unintegrated), nil
+	}
+	integrated := 0
+	for _, c := range t.unintegrated {
+		status, err := repo.CherryPick(t.main, c.SHA)
+		if err != nil {
+			return integrated, fmt.Errorf("%s: cherry-pick %s: %v", t.r.Name, c.Short(), err)
+		}
+		switch status {
+		case repo.CherryPickOK:
+			integrated++
+		case repo.CherryPickEmpty:
+			// Patch already present; the pick was auto-skipped internally.
+		case repo.CherryPickConflict:
+			return integrated, fmt.Errorf("%s: cherry-pick of %s conflicted in %s; the pick is in progress. "+
+				"Resolve it there, or run `git cherry-pick --abort` in %s to restore %s. "+
+				"Halted before integrating any remaining repos.",
+				t.r.Name, c.Short(), t.main, t.main, t.defBranch)
+		}
+	}
+	return integrated, nil
 }

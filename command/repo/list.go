@@ -39,11 +39,7 @@ func runList(args []string) error {
 	if len(args) > 0 {
 		return cli.Usagef("repo list takes no arguments")
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	l, err := cfg.Layout()
+	_, l, err := config.LoadLayout()
 	if err != nil {
 		return err
 	}
