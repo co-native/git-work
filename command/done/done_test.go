@@ -101,7 +101,7 @@ func TestRunUsageExitCode(t *testing.T) {
 
 func TestExtraFiles(t *testing.T) {
 	dir := t.TempDir()
-	for _, f := range []string{".git-work.yaml", ".git-work.yaml.tmp", "TICKET.md", "README.md", "CLAUDE.md"} {
+	for _, f := range []string{".git-work.yaml", ".git-work.yaml.tmp", "TICKET.md", "README.md", "AGENTS.md", "CLAUDE.md"} {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}

@@ -79,8 +79,9 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
 ## Generated files
 
 `new`/`add`/`refresh` write **managed blocks** into the work folder's `TICKET.md`,
-`README.md` and `CLAUDE.md` via `template.WriteManaged`, so hand edits outside the markers
-survive. `internal/template/workfolder.md` is compiled in with `go:embed` and is git-work
+`README.md` and instructions file (`AGENTS.md`, or `CLAUDE.md` per `instructions_file`)
+via `template.WriteManaged`, so hand edits outside the markers survive.
+`internal/template/workfolder.md` is compiled in with `go:embed` and is git-work
 describing its own contract - keep it to the tool's semantics, since operator preferences
 do not belong in the binary. `DESIGN.md` covers the assembly order and the two overlays.
 

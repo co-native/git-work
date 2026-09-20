@@ -1,6 +1,6 @@
 // Package rm implements `git work rm <repo>`: a scoped, single-repo version
 // of `done` that tears down one repo's worktree/branches, drops it from the
-// work folder's state, and refreshes the README/CLAUDE managed blocks -
+// work folder's state, and refreshes the README/instructions managed blocks -
 // leaving the rest of the work folder (and any other repos) intact.
 package rm
 
@@ -34,11 +34,11 @@ var Cmd = &cli.Command{
 	Args:     "<repo>",
 	Synopsis: []string{"git work rm <repo> [options]"},
 	Long: "Removes one repo from the work folder you are in: the same safety checks and\n" +
-		"teardown as done, scoped to <repo>, then the README/CLAUDE managed blocks are\n" +
-		"re-rendered from the repos that remain. <repo> must already be listed in\n" +
-		".git-work.yaml. Everything else - other repos, TICKET.md, the state file - is\n" +
-		"left alone, and rm never removes the folder: removing the last repo leaves an\n" +
-		"accurate zero-repo work folder.",
+		"teardown as done, scoped to <repo>, then the README and instructions file\n" +
+		"managed blocks are re-rendered from the repos that remain. <repo> must already\n" +
+		"be listed in .git-work.yaml. Everything else - other repos, TICKET.md, the state\n" +
+		"file - is left alone, and rm never removes the folder: removing the last repo\n" +
+		"leaves an accurate zero-repo work folder.",
 	Examples: []string{
 		"git work rm alpha --delete-local --delete-remote",
 		"git work rm alpha --non-interactive --force",
@@ -143,9 +143,9 @@ func run(args []string) error {
 		return fmt.Errorf("rm failed:\n  %s", strings.Join(failures, "\n  "))
 	}
 
-	// Re-aggregate the README.md and CLAUDE.md managed blocks from the
-	// repos that remain.
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, nil); err != nil {
+	// Re-aggregate the README.md and instructions file managed blocks from
+	// the repos that remain.
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, wf.Config.Instructions(), st, nil); err != nil {
 		return err
 	}
 

@@ -21,6 +21,45 @@ const (
 // IntegrationRoutes lists the accepted values of the `integration` key.
 var IntegrationRoutes = []string{IntegrationLocal, IntegrationPR}
 
+// Instructions files: the name of the file git-work generates at a work
+// folder's root for a coding agent to read. The same name selects the operator
+// and per-repo overlays that are inlined into it. DESIGN.md ("Generated
+// files") says why AGENTS.md is the default and when CLAUDE.md is the one to
+// configure.
+const (
+	InstructionsAgents = "AGENTS.md"
+	InstructionsClaude = "CLAUDE.md"
+)
+
+// InstructionsFiles lists the accepted values of the `instructions_file` key.
+var InstructionsFiles = []string{InstructionsAgents, InstructionsClaude}
+
+// ValidInstructionsFile reports whether s is an accepted `instructions_file`
+// value. The empty string is valid and means the default, so a Config built
+// without the field (a struct literal, or a file that writes the key empty)
+// behaves like one that never mentions it.
+func ValidInstructionsFile(s string) bool {
+	return s == "" || s == InstructionsAgents || s == InstructionsClaude
+}
+
+// Instructions resolves the instructions file name: the configured value,
+// else AGENTS.md.
+func (c *Config) Instructions() string {
+	if c.InstructionsFile != "" {
+		return c.InstructionsFile
+	}
+	return InstructionsAgents
+}
+
+// OtherInstructionsFile returns the instructions file name that is not file:
+// the name an overlay or a work folder written under the other setting has.
+func OtherInstructionsFile(file string) string {
+	if file == InstructionsClaude {
+		return InstructionsAgents
+	}
+	return InstructionsClaude
+}
+
 // Defaults are the house rules a repo inherits when it says nothing.
 //
 // Policy fields are string enums rather than bools so that "" can mean
@@ -50,6 +89,10 @@ func ValidRoute(s string) bool {
 // it runs at the point of use rather than at load, so a config file that is
 // only partly relevant to the command at hand cannot fail it.
 func (c *Config) Validate() error {
+	if !ValidInstructionsFile(c.InstructionsFile) {
+		return fmt.Errorf("instructions_file: invalid value %q (want %s)",
+			c.InstructionsFile, strings.Join(InstructionsFiles, " or "))
+	}
 	if !ValidRoute(c.Defaults.Integration) {
 		return fmt.Errorf("defaults.integration: invalid route %q (want %s)",
 			c.Defaults.Integration, strings.Join(IntegrationRoutes, " or "))
@@ -110,10 +153,11 @@ type Paths struct {
 // (`repos.<name>.<field>`, never by index) and makes duplicate names
 // unrepresentable rather than silently shadowed.
 type Config struct {
-	Defaults  Defaults              `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	Paths     Paths                 `yaml:"paths" json:"paths"`
-	Providers []Provider            `yaml:"ticket_providers,omitempty" json:"ticket_providers,omitempty"`
-	Repos     map[string]RepoConfig `yaml:"repos,omitempty" json:"repos,omitempty"`
+	Defaults         Defaults              `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Paths            Paths                 `yaml:"paths" json:"paths"`
+	InstructionsFile string                `yaml:"instructions_file,omitempty" json:"instructions_file,omitempty"`
+	Providers        []Provider            `yaml:"ticket_providers,omitempty" json:"ticket_providers,omitempty"`
+	Repos            map[string]RepoConfig `yaml:"repos,omitempty" json:"repos,omitempty"`
 }
 
 func defaults() *Config {
@@ -126,6 +170,7 @@ func defaults() *Config {
 			Repos: filepath.Join("~", "dev", "repos"),
 			Work:  filepath.Join("~", "dev", "work"),
 		},
+		InstructionsFile: InstructionsAgents,
 	}
 }
 
@@ -222,13 +267,14 @@ func DefaultPath() string {
 	return filepath.Join(base, "git-work", "config.yaml")
 }
 
-// OverlayPath returns the optional CLAUDE.md beside the config file, whose
-// contents are inlined into every work folder's generated CLAUDE.md. It sits in
-// git-work's own config directory rather than under the work root because it is
+// OverlayDir returns the directory that holds the optional operator overlay:
+// an AGENTS.md or CLAUDE.md beside the config file, whose contents are inlined
+// into every work folder's generated instructions file. It sits in git-work's
+// own config directory rather than under the work root because it is
 // configuration, not working data, and because the work root is a directory
 // git-work creates and destroys folders inside.
-func OverlayPath() string {
-	return filepath.Join(filepath.Dir(DefaultPath()), "CLAUDE.md")
+func OverlayDir() string {
+	return filepath.Dir(DefaultPath())
 }
 
 // Load reads the default config path.

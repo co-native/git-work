@@ -254,7 +254,8 @@ func TestRefreshAndAdd(t *testing.T) {
 	gw(home, "clone", oa, "alpha")
 	gw(home, "clone", ob, "beta")
 
-	// per-repo overlay for alpha
+	// per-repo overlay for alpha, under the old name: it must still be found
+	// when the generated file is AGENTS.md
 	os.WriteFile(filepath.Join(reposRoot, "alpha", "CLAUDE.md"), []byte("alpha overlay\n"), 0o644)
 
 	gw(home, "new", "PROJ-2", "--repos", "alpha", "--branch", "PROJ-2-foo", "--non-interactive")
@@ -262,9 +263,34 @@ func TestRefreshAndAdd(t *testing.T) {
 
 	// refresh from inside a worktree
 	gw(filepath.Join(workDir, "alpha"), "refresh")
-	data, _ := os.ReadFile(filepath.Join(workDir, "CLAUDE.md"))
+	data, _ := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
 	if !strings.Contains(string(data), "alpha overlay") {
-		t.Errorf("CLAUDE.md missing overlay after refresh:\n%s", data)
+		t.Errorf("AGENTS.md missing overlay after refresh:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Error("AGENTS.md is the default instructions file; no CLAUDE.md should be generated")
+	}
+
+	// Switching instructions_file renames the generated file on the next
+	// re-render, and hand content outside the markers moves with it.
+	f, _ := os.OpenFile(filepath.Join(workDir, "AGENTS.md"), os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString("\n## My notes\nkeep me\n")
+	f.Close()
+	gw(home, "config", "set", "instructions_file", "CLAUDE.md")
+	gw(workDir, "refresh", "--no-pull")
+	if _, err := os.Stat(filepath.Join(workDir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Error("AGENTS.md should be renamed away once instructions_file is CLAUDE.md")
+	}
+	data, _ = os.ReadFile(filepath.Join(workDir, "CLAUDE.md"))
+	for _, want := range []string{"alpha overlay", "keep me"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("CLAUDE.md missing %q after the switch:\n%s", want, data)
+		}
+	}
+	gw(home, "config", "unset", "instructions_file")
+	gw(workDir, "refresh", "--no-pull")
+	if _, err := os.Stat(filepath.Join(workDir, "AGENTS.md")); err != nil {
+		t.Error("unsetting instructions_file should switch back to AGENTS.md on refresh")
 	}
 
 	// add beta
@@ -525,14 +551,14 @@ func TestTicketlessAdoptRefreshRebaseSquashDone(t *testing.T) {
 	if !strings.Contains(string(readme), "beta") {
 		t.Errorf("README.md should list adopted repo beta after refresh:\n%s", readme)
 	}
-	// The re-rendered CLAUDE.md must state each repo's own branch: beta was
+	// The re-rendered AGENTS.md must state each repo's own branch: beta was
 	// adopted on side-quest, not the folder-level my-feature branch.
-	claude, _ := os.ReadFile(filepath.Join(workDir, "CLAUDE.md"))
-	if !strings.Contains(string(claude), "## alpha (./alpha)\nBranch: my-feature\n") {
-		t.Errorf("CLAUDE.md should state alpha's branch:\n%s", claude)
+	agents, _ := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	if !strings.Contains(string(agents), "## alpha (./alpha)\nBranch: my-feature\n") {
+		t.Errorf("AGENTS.md should state alpha's branch:\n%s", agents)
 	}
-	if !strings.Contains(string(claude), "## beta (./beta)\nBranch: side-quest\n") {
-		t.Errorf("CLAUDE.md should state beta's own branch side-quest:\n%s", claude)
+	if !strings.Contains(string(agents), "## beta (./beta)\nBranch: side-quest\n") {
+		t.Errorf("AGENTS.md should state beta's own branch side-quest:\n%s", agents)
 	}
 
 	// Rebase: commit work on the branch (still based on the old main tip),

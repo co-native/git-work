@@ -12,7 +12,7 @@ var Cmd = &cli.Command{
 	Long: "Views and edits the global config at ${XDG_CONFIG_HOME:-~/.config}/git-work/config.yaml.\n" +
 		"A missing file means built-in defaults are used, which is not an error.\n" +
 		"\n" +
-		"keys: paths.repos, paths.work, defaults.integration,\n" +
+		"keys: paths.repos, paths.work, instructions_file, defaults.integration,\n" +
 		"      repos.<name>.{integration,add_by_default},\n" +
 		"      providers.<name>.{type,default,folder_case,branch_case,patterns}",
 	Subs: []*cli.Command{ListCmd, GetCmd, SetCmd, UnsetCmd, EditCmd, PathCmd, InitCmd},

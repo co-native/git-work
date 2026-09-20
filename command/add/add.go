@@ -30,9 +30,9 @@ var Cmd = &cli.Command{
 	Synopsis: []string{"git work add [options]"},
 	Long: "Run from inside a work folder. Adds one or more repos - a worktree plus its\n" +
 		"branch per repo - to the current ticket, then re-aggregates the generated\n" +
-		"README.md and CLAUDE.md blocks. Branch resolution matches `new`: the folder's\n" +
-		"work branch is used, existing branches for the ticket, local or on origin,\n" +
-		"are offered for reuse, and --branch names the branch outright instead.\n" +
+		"README.md and instructions file blocks. Branch resolution matches `new`: the\n" +
+		"folder's work branch is used, existing branches for the ticket, local or on\n" +
+		"origin, are offered for reuse, and --branch names the branch outright instead.\n" +
 		"Added worktrees are rolled back if a later repo fails.",
 	Examples: []string{
 		"git work add --repos web",
@@ -186,8 +186,8 @@ func run(args []string) error {
 		return err
 	}
 
-	// Re-aggregate the README.md and CLAUDE.md managed blocks.
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, nil); err != nil {
+	// Re-aggregate the README.md and instructions file managed blocks.
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, wf.Config.Instructions(), st, nil); err != nil {
 		return err
 	}
 	success = true

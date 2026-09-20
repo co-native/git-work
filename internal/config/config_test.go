@@ -98,6 +98,26 @@ func TestValidate(t *testing.T) {
 	if err := (&Config{Repos: map[string]RepoConfig{"api": {Integration: "bogus"}}}).Validate(); err == nil {
 		t.Error("expected an error for an invalid repo route")
 	}
+	if err := (&Config{InstructionsFile: "NOTES.md"}).Validate(); err == nil {
+		t.Error("expected an error for an invalid instructions file")
+	}
+}
+
+// TestInstructions: the built-in default is AGENTS.md, a struct literal with
+// no value resolves to it, and a configured CLAUDE.md is honored.
+func TestInstructions(t *testing.T) {
+	if got := Default().Instructions(); got != InstructionsAgents {
+		t.Errorf("default instructions file = %q, want %s", got, InstructionsAgents)
+	}
+	if got := (&Config{}).Instructions(); got != InstructionsAgents {
+		t.Errorf("empty instructions file should resolve to %s, got %q", InstructionsAgents, got)
+	}
+	if got := (&Config{InstructionsFile: InstructionsClaude}).Instructions(); got != InstructionsClaude {
+		t.Errorf("configured CLAUDE.md not honored, got %q", got)
+	}
+	if OtherInstructionsFile(InstructionsAgents) != InstructionsClaude || OtherInstructionsFile(InstructionsClaude) != InstructionsAgents {
+		t.Error("OtherInstructionsFile should swap the two names")
+	}
 }
 
 // TestRepoConfigRoundTrip: the repos map survives YAML, and an all-zero

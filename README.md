@@ -96,6 +96,8 @@ paths:
   repos: ~/dev/repos # where primary clones live
   work: ~/dev/work # where work folders live
 
+instructions_file: AGENTS.md # the agent instructions file generated per work folder; or CLAUDE.md
+
 repos: # per-repo overrides
   api:
     add_by_default: true # pre-ticked in `git work new`'s picker

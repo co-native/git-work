@@ -237,7 +237,7 @@ func TestRunUnknownRepoErrors(t *testing.T) {
 // TestRunRemovesContainedRepoAndUpdatesAggregates covers the happy path: rm
 // on a squash-merged (contained) repo removes its worktree, deletes both
 // branches, drops it from .git-work.yaml, leaves the other repo untouched,
-// and re-renders README/CLAUDE without the removed repo.
+// and re-renders README/AGENTS without the removed repo.
 func TestRunRemovesContainedRepoAndUpdatesAggregates(t *testing.T) {
 	l := newTestLayout(t)
 	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
@@ -299,7 +299,7 @@ func TestRunRemovesContainedRepoAndUpdatesAggregates(t *testing.T) {
 		t.Errorf("reloaded repos = %v, want only beta", reloaded.Repos)
 	}
 
-	// README/CLAUDE re-rendered without alpha, still with beta.
+	// README/AGENTS re-rendered without alpha, still with beta.
 	readme, err := os.ReadFile(filepath.Join(workDir, "README.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -310,15 +310,15 @@ func TestRunRemovesContainedRepoAndUpdatesAggregates(t *testing.T) {
 	if !strings.Contains(string(readme), "beta") {
 		t.Errorf("README.md should still mention beta:\n%s", readme)
 	}
-	claude, err := os.ReadFile(filepath.Join(workDir, "CLAUDE.md"))
+	claude, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(claude), "## alpha") {
-		t.Errorf("CLAUDE.md should no longer have an alpha section:\n%s", claude)
+		t.Errorf("AGENTS.md should no longer have an alpha section:\n%s", claude)
 	}
 	if !strings.Contains(string(claude), "## beta (./beta)") {
-		t.Errorf("CLAUDE.md should still have a beta section:\n%s", claude)
+		t.Errorf("AGENTS.md should still have a beta section:\n%s", claude)
 	}
 }
 

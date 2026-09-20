@@ -257,7 +257,7 @@ func run(args []string) error {
 		added = append(added, rec)
 	}
 
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, &template.TicketDetails{Description: tk.description}); err != nil {
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, cfg.Instructions(), st, &template.TicketDetails{Description: tk.description}); err != nil {
 		return err
 	}
 	if err := st.Save(workDir); err != nil {

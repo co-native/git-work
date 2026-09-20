@@ -256,12 +256,12 @@ func TestNewNoTicket(t *testing.T) {
 	if !strings.Contains(string(readme), "# Spike Harness\n") {
 		t.Errorf("README.md heading should be the name:\n%s", readme)
 	}
-	claude, err := os.ReadFile(filepath.Join(workDir, "CLAUDE.md"))
+	claude, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(claude), "# Spike Harness\nBranch: spike-harness\n") {
-		t.Errorf("CLAUDE.md heading should be the name without a ticket prefix:\n%s", claude)
+		t.Errorf("AGENTS.md heading should be the name without a ticket prefix:\n%s", claude)
 	}
 
 	// The worktree must be on the name-derived branch.

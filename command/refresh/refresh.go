@@ -28,7 +28,8 @@ var Cmd = &cli.Command{
 	Long: "Run from inside a work folder. Fast-forward-pulls each ticket repo's default\n" +
 		"branch in its primary clone - explicitly, so a primary left on another branch\n" +
 		"still freshens it, and a failed pull is a warning rather than an abort - then\n" +
-		"re-renders the managed blocks of TICKET.md, README.md and CLAUDE.md from\n" +
+		"re-renders the managed blocks of TICKET.md, README.md and the instructions\n" +
+		"file (AGENTS.md, or CLAUDE.md per `config instructions_file`) from\n" +
 		"current state, re-fetching the provider's title and description (the existing\n" +
 		"title is kept if that fetch fails). Ticketless folders skip both.",
 	Examples: []string{"git work refresh --no-pull"},
@@ -114,7 +115,7 @@ func run(args []string) error {
 			}
 		}
 	}
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, st, ticket); err != nil {
+	if err := template.WriteWorkFolder(workDir, l.ReposRoot, cfg.Instructions(), st, ticket); err != nil {
 		return err
 	}
 	fmt.Printf("Refreshed generated files in %s\n", workDir)

@@ -26,6 +26,9 @@ func TestListShowsDefaults(t *testing.T) {
 	if !strings.Contains(buf.String(), "paths:") || !strings.Contains(buf.String(), "repos:") {
 		t.Fatalf("list output missing paths:\n%s", buf.String())
 	}
+	if !strings.Contains(buf.String(), "instructions_file: AGENTS.md") {
+		t.Fatalf("list output should show the default instructions file:\n%s", buf.String())
+	}
 }
 
 func TestSetThenGetRoundTrip(t *testing.T) {

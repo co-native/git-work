@@ -30,6 +30,17 @@ var scalars = map[string]scalar{
 		set:   func(c *cfg.Config, v string) error { c.Paths.Work = v; return nil },
 		unset: func(c *cfg.Config) { c.Paths.Work = cfg.Default().Paths.Work },
 	},
+	"instructions_file": {
+		get: func(c *cfg.Config) string { return c.InstructionsFile },
+		set: func(c *cfg.Config, v string) error {
+			if v == "" || !cfg.ValidInstructionsFile(v) {
+				return fmt.Errorf("instructions_file must be %s", strings.Join(cfg.InstructionsFiles, " or "))
+			}
+			c.InstructionsFile = v
+			return nil
+		},
+		unset: func(c *cfg.Config) { c.InstructionsFile = cfg.Default().InstructionsFile },
+	},
 	"defaults.integration": {
 		get: func(c *cfg.Config) string { return c.Defaults.Integration },
 		set: func(c *cfg.Config, v string) error {

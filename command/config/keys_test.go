@@ -176,6 +176,27 @@ func TestSetRepoInvalidRoute(t *testing.T) {
 	}
 }
 
+func TestSetInstructionsFile(t *testing.T) {
+	c := baseConfig()
+	if err := setKey(c, "instructions_file", []string{"CLAUDE.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if c.InstructionsFile != cfg.InstructionsClaude {
+		t.Fatalf("instructions_file = %q", c.InstructionsFile)
+	}
+	for _, bad := range []string{"", "agents", "claude.md", "NOTES.md"} {
+		if err := setKey(c, "instructions_file", []string{bad}); err == nil {
+			t.Errorf("set instructions_file %q should be rejected", bad)
+		}
+	}
+	if err := unsetKey(c, "instructions_file"); err != nil {
+		t.Fatal(err)
+	}
+	if c.InstructionsFile != cfg.InstructionsAgents {
+		t.Fatalf("unset should restore the default, got %q", c.InstructionsFile)
+	}
+}
+
 // TestSetIntegrationEmptyRejected: "" means inherit in the struct, but
 // clearing a key is `unset`'s job, not `set ""`.
 func TestSetIntegrationEmptyRejected(t *testing.T) {

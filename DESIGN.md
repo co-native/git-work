@@ -16,18 +16,18 @@ folders_ (each a sibling collection of worktrees) under a _work root_. It instal
 Each command package owns its own flag parsing. Shared building blocks live under
 `internal/`:
 
-| Package      | Responsibility                                                                                                                                                                                                                                                                               |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; dot-path key access (in `command/config`).                                                                                                                                                                               |
-| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                        |
-| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                   |
-| `workfolder` | The preamble of every command run inside a work folder (`Load`: state found from the cwd, config, resolved layout) and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                              |
-| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`). The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                 |
-| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`) and the shared worktree/state branch check (`WorktreeBranchProblem`).              |
-| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                     |
-| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, `CLAUDE.md`), including the embedded work folder contract (`workfolder.md`) and the operator/per-repo overlays inlined into `CLAUDE.md`; `WriteWorkFolder` is the one place the set of generated files is assembled. |
-| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                    |
-| `teardown`   | Per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                      |
+| Package      | Responsibility                                                                                                                                                                                                                                                                                                   |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; dot-path key access (in `command/config`).                                                                                                                                                                                                   |
+| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                            |
+| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                       |
+| `workfolder` | The preamble of every command run inside a work folder (`Load`: state found from the cwd, config, resolved layout) and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                                  |
+| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`). The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                                     |
+| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`) and the shared worktree/state branch check (`WorktreeBranchProblem`).                                  |
+| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                         |
+| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the embedded work folder contract (`workfolder.md`) and the operator/per-repo overlays inlined into the instructions file; `WriteWorkFolder` is the one place the set of generated files is assembled. |
+| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                        |
+| `teardown`   | Per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                          |
 
 ## Command reference
 
@@ -176,8 +176,8 @@ folder is created, so a refusal reports all repos in one run and creates nothing
 ### `add [flags]`
 
 Run from inside a work folder (located via `FindUp`). Adds one or more repos - new
-worktrees + branches - to the current ticket and re-aggregates the generated
-`README.md`/`CLAUDE.md`. The folder's work branch is the default for each added repo and
+worktrees + branches - to the current ticket and re-aggregates the generated `README.md`
+and instructions file. The folder's work branch is the default for each added repo and
 `--branch` overrides it for the repos being added (recorded per repo in `repos[].branch`);
 existing branches are handled by [Branch resolution](#branch-resolution), resolved for
 every repo before the first worktree is added.
@@ -215,9 +215,9 @@ Run from inside a work folder. First ff-only-pulls each ticket repo's default br
 its primary clone (explicitly, so a primary left on another branch still freshens the
 default branch; a failed pull, e.g. a diverged branch, being offline, or layout problems,
 is a warning, never an abort), then re-renders the managed blocks of `TICKET.md`,
-`README.md`, and `CLAUDE.md` from current state - re-fetching provider details for the
-title/description (keeps the existing title if the fetch fails). Ticketless work folders
-skip the provider fetch and `TICKET.md`.
+`README.md`, and the instructions file from current state - re-fetching provider details
+for the title/description (keeps the existing title if the fetch fails). Ticketless work
+folders skip the provider fetch and `TICKET.md`.
 
 ### `rebase <repo> | --all [flags]`
 
@@ -510,11 +510,11 @@ inside a work folder (located via `state.FindUp`); `<repo>` must already be in
 `.git-work.yaml` or the command errors. Runs the same `teardown.CheckRepo` safety checks
 and `teardown.TeardownRepo` teardown as `done` (uncommitted/unpushed/merged-or-contained,
 `--force` to override, worktree-then-branch order), scoped to just that repo, then
-re-aggregates `README.md`/`CLAUDE.md`'s managed blocks from the repos that remain. The
-rest of the work folder - other repos, `TICKET.md`, the state file itself - is left
-untouched; `rm` never removes the folder. Removing the last repo leaves an accurate
-zero-repo `.git-work.yaml` and regenerated `TICKET.md`/ `README.md`/`CLAUDE.md` rather
-than an invisible or half-deleted folder.
+re-aggregates the `README.md` and instructions file managed blocks from the repos that
+remain. The rest of the work folder - other repos, `TICKET.md`, the state file itself - is
+left untouched; `rm` never removes the folder. Removing the last repo leaves an accurate
+zero-repo `.git-work.yaml` and regenerated `TICKET.md`, `README.md` and instructions file
+rather than an invisible or half-deleted folder.
 
 ### `config <subcommand>`
 
@@ -604,6 +604,8 @@ paths:
   repos: ~/dev/repos # primary clones root (default ~/dev/repos)
   work: ~/dev/work # work folders root  (default ~/dev/work)
 
+instructions_file: AGENTS.md # AGENTS.md | CLAUDE.md (default AGENTS.md)
+
 defaults: # optional; house rules every repo inherits
   integration: pr # local | pr (default local)
 
@@ -628,6 +630,7 @@ ticket_providers: # optional; first matching pattern wins
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `paths.repos`          | Root holding one primary clone per repo. Default `~/dev/repos`.                                                                                                                        |
 | `paths.work`           | Root holding per-ticket work folders. Default `~/dev/work`.                                                                                                                            |
+| `instructions_file`    | Name of the generated instructions file at a work folder's root, and of the overlays inlined into it: `AGENTS.md` (default) or `CLAUDE.md`. See [Generated files](#generated-files).   |
 | `defaults.integration` | House integration route, inherited by every repo that does not set its own: `local` or `pr`. Unset means `local`.                                                                      |
 | `repos.<name>`         | Per-repo overrides, keyed by repo name. Absent entries are equivalent to empty ones.                                                                                                   |
 | `…integration`         | This repo's integration route: `local` (git-work moves the commits) or `pr` (a pull request does, so `integrate` refuses). Empty inherits `defaults.integration`.                      |
@@ -678,6 +681,7 @@ A fetch failure is a warning - `new`/`refresh` continue without the details.
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `paths.repos`                  | Scalar. `unset` resets to the default.                                                                                                                                  |
 | `paths.work`                   | Scalar. `unset` resets to the default.                                                                                                                                  |
+| `instructions_file`            | Scalar (`AGENTS.md` or `CLAUDE.md`). `unset` resets to `AGENTS.md`.                                                                                                     |
 | `defaults.integration`         | Scalar (`local` or `pr`). `unset` clears it back to the built-in `local`.                                                                                               |
 | `repos.<name>`                 | `get` prints the entry as YAML; `unset` drops it.                                                                                                                       |
 | `repos.<name>.integration`     | Scalar (`local` or `pr`). Auto-creates the entry if absent; `unset` clears it back to inheriting `defaults.integration`.                                                |
@@ -709,7 +713,7 @@ detected from `origin/HEAD` at clone/adopt time):
 ```
 ~/dev/repos/<repo>/
 ├── .git            # pointer file: "gitdir: ./main/.git" (core.worktree = ..)
-├── CLAUDE.md       # optional per-repo overlay, inlined by template.AggregateClaude
+├── AGENTS.md       # optional per-repo overlay, inlined by template.AggregateInstructions
 └── main/           # the real clone (RepoMain); named after the default branch
 ```
 
@@ -725,7 +729,7 @@ Work folders hold one worktree per repo plus generated files:
 ├── .git-work.yaml  # state (or .git-work.json)
 ├── TICKET.md       # generated: ticket id, title, description
 ├── README.md       # generated: ticket, branch, repo list
-├── CLAUDE.md       # generated: embedded contract + operator overlay + repo overlays
+├── AGENTS.md       # generated: embedded contract + operator overlay + repo overlays
 ├── <repoA>/        # worktree (absolute path) on the work branch
 └── <repoB>/
 ```
@@ -763,13 +767,32 @@ that field existed fall back to the top-level `branch` on load - a best guess th
 
 ## Generated files
 
-`new`/`add`/`refresh` write **managed blocks** into `TICKET.md`, `README.md`, and
-`CLAUDE.md` via `template.WriteManaged`, so hand edits outside the managed region survive
-a re-render. `done` treats these three files plus the two state file names as its own and
-may delete them; any other file blocks folder removal unless `--remove-all` is given.
+`new`/`add`/`refresh` write **managed blocks** into `TICKET.md`, `README.md`, and the
+instructions file via `template.WriteManaged`, so hand edits outside the managed region
+survive a re-render. `done` treats these files plus the two state file names as its own
+and may delete them; any other file blocks folder removal unless `--remove-all` is given.
 
-`CLAUDE.md`'s block has a fixed section order - general rules before repo specifics, with
-the identity header first:
+The instructions file is the one a coding agent reads at the work folder root. Its name is
+`instructions_file` in the config: `AGENTS.md` by default, or `CLAUDE.md`. Claude Code
+reads only one of the two per session. When a `CLAUDE.md` exists in the working directory
+or above it, Claude Code ignores every `AGENTS.md`, so a work folder that writes
+`CLAUDE.md` hides the `AGENTS.md` of every repo worktree under it. That is why `AGENTS.md`
+is the default. `CLAUDE.md` remains for a Claude Code that does not read `AGENTS.md` (a
+version before 2.1.277, or a session that gets no feature flags). The reverse also holds:
+a repo that ships a root `CLAUDE.md` hides the work folder's `AGENTS.md` whenever a
+session starts inside that worktree rather than at the folder root. git-work cannot change
+that.
+
+Both names are in `template.GeneratedFiles`, so `done` can tear down a folder written
+under either setting. A re-render (`add`, `rm`, `refresh`) migrates a folder written under
+the other name (`template.MigrateInstructions`), so a folder never holds both and the
+stale one cannot win. A file without the markers is not git-work's and is left alone. When
+only the old file exists it is renamed, so hand content outside the markers moves with it.
+When both exist, the managed block is cut out of the old file (which is deleted if nothing
+else is in it) and the fresh block goes into the new file, ahead of what it already held.
+
+The instructions file's block has a fixed section order - general rules before repo
+specifics, with the identity header first:
 
 1. **Identity** - `# <ticket>: <title>` (or the title alone when ticketless) and the
    folder-level branch.
@@ -779,16 +802,19 @@ the identity header first:
    torn down with `git work` rather than by hand. It ships in the binary rather than being
    installed beside it so there is nothing to keep in sync per machine and the text always
    matches the tool that wrote it; `git work refresh` propagates an upgrade.
-3. **Operator overlay** - the optional `${XDG_CONFIG_HOME:-~/.config}/git-work/CLAUDE.md`
-   (`config.OverlayPath()`), for guidance that applies to every work folder but is the
+3. **Operator overlay** - the optional `${XDG_CONFIG_HOME:-~/.config}/git-work/AGENTS.md`
+   (in `config.OverlayDir()`), for guidance that applies to every work folder but is the
    operator's rather than the tool's. Missing or blank is silently skipped.
 4. **Per-repo sections** - one per included repo, each stating that repo's own branch and
-   inlining its optional `~/dev/repos/<repo>/CLAUDE.md` overlay.
+   inlining its optional `~/dev/repos/<repo>/AGENTS.md` overlay.
 
-Both overlays are inlined verbatim; an installer's leading HTML comment is left in place,
-since Claude Code strips block-level comments before reading a `CLAUDE.md`. Because the
-content is copied into each folder, editing an overlay takes effect in existing folders
-only after `git work refresh`.
+Each overlay is looked up under the configured name first and the other name second, so
+switching `instructions_file` does not require the overlays to be renamed. One overlay per
+location is inlined. A leading block HTML comment (an installer's "generated from" marker)
+is dropped: Claude Code documents that it strips block comments from `CLAUDE.md`, but not
+from `AGENTS.md`, and other agents make no such promise. The rest is inlined verbatim.
+Because the content is copied into each folder, editing an overlay takes effect in
+existing folders only after `git work refresh`.
 
 ## Branch resolution
 
