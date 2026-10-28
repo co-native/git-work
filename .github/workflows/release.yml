@@ -1,8 +1,9 @@
 name: Release
 
-# Tagging is what gives `go install github.com/co-native/git-work@latest` a real
-# version to report; untagged it falls back to a pseudo-version. No binaries are
-# attached - go install is the distribution path.
+# Tags are the only release trigger. The tag must point at a commit on main:
+# that keeps a release from shipping a commit that never went through main's CI.
+# GoReleaser builds the cross-platform archives and attaches them, with
+# checksums, to the GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -15,6 +16,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
+          fetch-depth: 0
+      - name: Require the tag to be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          commit="$(git rev-parse "$GITHUB_REF^{commit}")"
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::release tags must point to a commit on main"
+            exit 1
+          fi
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test ./... -count=1
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

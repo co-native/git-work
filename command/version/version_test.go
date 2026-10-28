@@ -30,6 +30,18 @@ func TestStringIdentifiesTheBuild(t *testing.T) {
 	}
 }
 
+func TestInfoUsesVersionOverride(t *testing.T) {
+	// A cross-compiled release archive has no module version in BuildInfo, so
+	// the release build must be able to stamp the tag in with -X.
+	old := versionOverride
+	versionOverride = "v9.9.9"
+	t.Cleanup(func() { versionOverride = old })
+
+	if got := info().version; got != "v9.9.9" {
+		t.Errorf("info().version = %q; want the linker-stamped tag", got)
+	}
+}
+
 func TestInfoDegradesWithoutBuildInfo(t *testing.T) {
 	// A version command that errors is worse than one admitting it cannot
 	// tell, so an unset version must still render something usable.

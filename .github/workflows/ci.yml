@@ -120,3 +120,15 @@ jobs:
             exit 1
           fi
           echo "all commits signed off, and the addresses match"
+
+  release-config:
+    # The release workflow only runs on a tag, so validate its config on every
+    # change instead of discovering a bad .goreleaser.yaml after tagging.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

@@ -22,7 +22,15 @@ It installs as `git-work` on `PATH`, so git dispatches it: `git work <command>`.
 
 ## Install
 
-Needs a [Go toolchain](https://go.dev/dl/) - there are no prebuilt binaries.
+Prebuilt archives for Linux, macOS and Windows are attached to every release, with a
+`checksums.txt` alongside them. Download the archive for your platform from
+[Releases](https://github.com/co-native/git-work/releases), verify it, and put `git-work`
+on `PATH`.
+
+The archives are unsigned, so macOS Gatekeeper and Windows SmartScreen may ask you to
+allow the binary on first run.
+
+With a [Go toolchain](https://go.dev/dl/):
 
 ```sh
 go install github.com/co-native/git-work@latest

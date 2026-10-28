@@ -23,13 +23,16 @@ the invariants; when the two disagree, `DESIGN.md` wins.
 ## Build and test
 
 ```sh
-make build       # -> dist/git-work
-make test        # go test ./...
-make fmt         # deno fmt (markdown, 90 cols) + gofmt
-make fmt-check   # both, without rewriting
+make build            # -> dist/git-work, version stamped from git describe
+make test             # go test ./...
+make fmt               # deno fmt (markdown, 90 cols) + gofmt
+make fmt-check         # both, without rewriting
+make release-check     # validate .goreleaser.yaml (requires goreleaser)
+make release-snapshot  # local snapshot archives (requires goreleaser)
 ```
 
-`make` alone lists every target.
+Release archives are built by GoReleaser on a `v*` tag, and the tag must point at a commit
+on `main`. `make` alone lists every target.
 
 Tests shell out to real git and are hermetic: they need no git identity and no global git
 config, so they pass on a bare CI runner. Single package or test:

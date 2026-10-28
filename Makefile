@@ -2,6 +2,11 @@ BINARY := git-work
 DIST_DIR := dist
 INSTALL_DIR := $(HOME)/.local/bin
 
+# GoReleaser stamps release archives from the tag. Local builds use git describe
+# because Go cannot stamp VCS metadata from a linked worktree (its .git is a file).
+VERSION ?= $(shell git describe --tags --always --dirty --match 'v[0-9]*' 2>/dev/null)
+VERSION_LDFLAG := $(if $(VERSION),-X github.com/co-native/git-work/command/version.versionOverride=$(VERSION))
+
 # Markdown is formatted with `deno fmt` at 90 columns. Note that deno fmt also
 # reformats fenced yaml/json blocks, so a block whose columns are hand-aligned
 # needs an <!-- deno-fmt-ignore --> above it.
@@ -17,7 +22,7 @@ FIX_MIN_SCORE := $(or $(MIN_SCORE),7.0)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build install clean test fmt fmt-check fmt-md fmt-md-check fmt-go fmt-go-check vulncheck fix-dep-vulns fix-dep-vulns-yes
+.PHONY: help build install clean test fmt fmt-check fmt-md fmt-md-check fmt-go fmt-go-check release-check release-snapshot vulncheck fix-dep-vulns fix-dep-vulns-yes
 
 # A target's `## text` is its line in `make help`; targets without one are
 # omitted, so a new target should carry one.
@@ -27,7 +32,7 @@ help: ## list the targets (the default)
 	@echo "  MIN_SCORE=<cvss>   floor for vulncheck (default: all) and fix-dep-vulns (default: $(FIX_MIN_SCORE))"
 
 build: ## build the binary into DIST_DIR
-	go build -o $(DIST_DIR)/$(BINARY) .
+	go build -ldflags '$(VERSION_LDFLAG)' -o $(DIST_DIR)/$(BINARY) .
 
 # Installs as `git-work` on PATH so git dispatches `git work <cmd>`; make sure
 # $(INSTALL_DIR) is on PATH. `go install github.com/co-native/git-work@latest`
@@ -38,6 +43,12 @@ install: build ## build, then install the binary into INSTALL_DIR
 
 clean: ## remove DIST_DIR
 	rm -rf $(DIST_DIR)
+
+release-check: ## validate .goreleaser.yaml (requires goreleaser)
+	goreleaser check
+
+release-snapshot: ## build a local snapshot release (requires goreleaser)
+	goreleaser release --snapshot --clean
 
 test: ## go test ./...
 	go test ./...

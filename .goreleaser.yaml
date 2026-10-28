@@ -1,0 +1,59 @@
+# GoReleaser configuration for release archives. The release workflow runs this
+# on a v* tag, and the tag must point at a commit on main. Local validation:
+# `goreleaser check`, or `goreleaser release --snapshot --clean` for a dry run.
+version: 2
+
+project_name: git-work
+
+builds:
+  - id: git-work
+    main: .
+    binary: git-work
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    # A cross-compiled archive has no module version in debug.BuildInfo, so
+    # without this every release would report (devel). go install still uses
+    # BuildInfo and keeps reporting the module tag.
+    ldflags:
+      - "-s -w"
+      - "-X github.com/co-native/git-work/command/version.versionOverride={{ .Tag }}"
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^Merge pull request"
+
+release:
+  github:
+    owner: co-native
+    name: git-work
+  draft: false
+  prerelease: auto

@@ -650,7 +650,11 @@ the subcommands.
 Prints one line identifying the build - version, VCS revision and date, Go version and
 platform - to paste into a bug report. `git work --version` prints the same thing. Values
 come from `runtime/debug.ReadBuildInfo`, so a `go install` from a tag reports the tag and
-a build from a checkout reports its commit; `-v` is left unclaimed.
+a build from a checkout reports its commit. Release archives are cross-compiled and have
+no module version in `BuildInfo`, so GoReleaser stamps the tag with
+`-X ...command/version.versionOverride`; local `make build` does the same from
+`git describe`, because a linked worktree has no VCS metadata for Go to read. `-v` is left
+unclaimed.
 
 ## The default-branch guard
 

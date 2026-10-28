@@ -1,12 +1,11 @@
 // Package version implements `git work version`: the build's identity, in one
 // line meant to be pasted into a bug report.
 //
-// Everything comes from runtime/debug.ReadBuildInfo rather than -ldflags. The
-// binary is distributed with `go install`, which never runs the Makefile, so an
-// ldflags-stamped variable would read "unknown" for exactly the people most
-// likely to be reporting a problem. Build info is populated either way: the
-// module version for `go install module@version`, and the VCS revision plus
-// dirty flag for a build from a checkout.
+// The version comes from runtime/debug.ReadBuildInfo when it is available. A
+// cross-compiled release archive has no module version, so GoReleaser stamps the
+// tag into versionOverride with -X. `go install` and local builds leave it empty
+// and keep BuildInfo authoritative; the Makefile stamps local builds separately
+// because a linked worktree has no VCS metadata for Go to read.
 package version
 
 import (
@@ -16,6 +15,11 @@ import (
 
 	"github.com/co-native/git-work/internal/cli"
 )
+
+// versionOverride is set by the release build. It is deliberately unexported:
+// the linker can set any string variable, and nothing in the program needs to
+// read it directly.
+var versionOverride string
 
 // Cmd describes `git work version` for the help system. main.go builds its
 // index row from Short and answers `git work help version` from the same value
@@ -76,30 +80,33 @@ func (b build) dirtyMark() string {
 // cannot tell.
 func info() build {
 	b := build{version: "(unknown)"}
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		return b
-	}
-	if bi.Main.Version != "" {
-		b.version = bi.Main.Version
-	}
-	for _, s := range bi.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			b.revision = s.Value
-			if len(b.revision) > 7 {
-				b.revision = b.revision[:7]
-			}
-		case "vcs.time":
-			// Date alone: the clock time adds noise to a line whose job is to
-			// identify a build, and the revision already pins it exactly.
-			b.date = s.Value
-			if len(b.date) >= 10 {
-				b.date = b.date[:10]
-			}
-		case "vcs.modified":
-			b.dirty = s.Value == "true"
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if bi.Main.Version != "" {
+			b.version = bi.Main.Version
 		}
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				b.revision = s.Value
+				if len(b.revision) > 7 {
+					b.revision = b.revision[:7]
+				}
+			case "vcs.time":
+				// Date alone: the clock time adds noise to a line whose job is to
+				// identify a build, and the revision already pins it exactly.
+				b.date = s.Value
+				if len(b.date) >= 10 {
+					b.date = b.date[:10]
+				}
+			case "vcs.modified":
+				b.dirty = s.Value == "true"
+			}
+		}
+	}
+	// The linker stamp wins over BuildInfo: a tagged checkout built by
+	// GoReleaser still reports (devel) in Main.Version.
+	if versionOverride != "" {
+		b.version = versionOverride
 	}
 	return b
 }
