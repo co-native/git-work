@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/co-native/git-work/internal/layout"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -164,5 +166,52 @@ func TestRepoBranchMigrationJSON(t *testing.T) {
 	}
 	if out.Repos[0].Branch != "PROJ-3-x" {
 		t.Errorf("Repo.Branch = %q, want PROJ-3-x", out.Repos[0].Branch)
+	}
+}
+
+func TestModeAndDefaultBranchRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s := &State{
+		TicketID: "PROJ-4", Branch: "PROJ-4-x", Mode: layout.ModeClone,
+		Repos: []Repo{{Name: "a", BranchSource: "new", DefaultBranch: "main"}},
+	}
+	if err := s.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != layout.ModeClone {
+		t.Errorf("Mode = %q, want clone", out.Mode)
+	}
+	if out.Repos[0].DefaultBranch != "main" {
+		t.Errorf("DefaultBranch = %q, want main", out.Repos[0].DefaultBranch)
+	}
+}
+
+func TestModeMigrationDefaultsToWorktree(t *testing.T) {
+	dir := t.TempDir()
+	old := "ticket_id: PROJ-5\nbranch: b\nrepos:\n  - name: a\n    branch: b\n"
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Mode != layout.ModeWorktree {
+		t.Errorf("Mode = %q, want worktree", out.Mode)
+	}
+}
+
+func TestModeInvalidIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	bad := "mode: bogus\nticket_id: PROJ-6\nbranch: b\n"
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected an error for an unknown mode")
 	}
 }

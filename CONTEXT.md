@@ -8,7 +8,25 @@ per-tool contexts via a `CONTEXT-MAP.md`.
 
 - **Operator** - the person running `git-work`.
 - **Work folder** - a directory under `paths.work` (`~/dev/work/<ticket>-<slug>/`) holding
-  one worktree per participating repo plus a `.git-work.yaml` state file.
+  one checkout per participating repo plus a `.git-work.yaml` state file. The checkout is
+  a linked worktree in worktree mode and a full clone in clone mode.
+- **Checkout mode** - how a work folder holds its repos: `worktree` or `clone`. Chosen at
+  `new` (`--mode` or `defaults.mode`), recorded in state, never mixed in one folder.
+- **Worktree mode** - the original layout: each work folder repo is a linked worktree
+  backed by a primary clone under the repos root.
+- **Clone mode** - each work folder repo is a self-contained full clone; no primary clone
+  is needed and the folder can be moved or mounted as a unit.
+- **Checkout** - one repo's directory inside a work folder: a linked worktree or a full
+  clone, depending on the mode.
+- **Temp worktree** - the transient linked worktree at
+  `<work>/.worktrees/integrate-<repo>` that clone-mode `integrate` uses for the default
+  branch.
+- **Agent worktree** - a linked worktree at `<work>/.worktrees/agent-<agent>/<repo>` that
+  a subagent uses for its own branch; a convention, not state.
+- **Repo registry** - the `repos.<name>.url` config entries that let clone mode create a
+  repo without a local primary clone.
+- **Recorded default branch** - `repos[].default_branch` in state, captured when a
+  clone-mode folder is created and used as the integrate/rebase/push --main target.
 - **Work branch** - the branch a repo has checked out in its worktree for a ticket;
   recorded per repo in state (`repos[].branch`). Never a repo's default branch.
 - **Ticket prefix** - the leading segment of a ticket id (`PROJ` in `PROJ-10`), matched

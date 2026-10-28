@@ -11,6 +11,7 @@ import (
 
 	"github.com/co-native/git-work/internal/cli"
 	"github.com/co-native/git-work/internal/cli/clitest"
+	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/state"
 )
 
@@ -113,6 +114,11 @@ func TestExtraFiles(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "alpha", "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// .worktrees is reserved: its contents are never user extra files.
+	if err := os.MkdirAll(filepath.Join(dir, layout.WorktreesDirName, "agent-x", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, layout.WorktreesDirName, "agent-x", "alpha", "f"), []byte("x\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "alpha", "code.go"), []byte("x\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "alpha", "sub", "more.go"), []byte("x\n"), 0o644)
 
@@ -240,5 +246,33 @@ func TestDoneRemovesCleanFolder(t *testing.T) {
 	}
 	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
 		t.Errorf("clean work folder still present (%v); should be removed", statErr)
+	}
+}
+
+func TestDoneRefusesAgentWorktreesWithoutForce(t *testing.T) {
+	workDir := writeWorkFolder(t)
+	agent := filepath.Join(workDir, layout.WorktreesDirName, "agent-x", "api")
+	if err := os.MkdirAll(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	_ = captureStdout(t, func() {
+		err = run([]string{workDir, "--non-interactive"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "leftover worktree") {
+		t.Fatalf("run without --force = %v, want a leftover-worktree refusal", err)
+	}
+	if _, statErr := os.Stat(agent); statErr != nil {
+		t.Fatal("refusal removed the agent worktree")
+	}
+
+	_ = captureStdout(t, func() {
+		err = run([]string{workDir, "--non-interactive", "--force"})
+	})
+	if err != nil {
+		t.Fatalf("run --force: %v", err)
+	}
+	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+		t.Fatalf("work folder still present after --force: %v", statErr)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	cfg "github.com/co-native/git-work/internal/config"
+	"github.com/co-native/git-work/internal/layout"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,6 +53,18 @@ var scalars = map[string]scalar{
 		},
 		unset: func(c *cfg.Config) { c.Defaults.Integration = "" },
 	},
+	"defaults.mode": {
+		get: func(c *cfg.Config) string { return string(c.Defaults.Mode) },
+		set: func(c *cfg.Config, v string) error {
+			m, err := checkMode(v)
+			if err != nil {
+				return err
+			}
+			c.Defaults.Mode = m
+			return nil
+		},
+		unset: func(c *cfg.Config) { c.Defaults.Mode = "" },
+	},
 }
 
 // field is one key under a named entry (`repos.<name>.<field>`,
@@ -88,6 +101,16 @@ var repoFields = map[string]field[cfg.RepoConfig]{
 			return nil
 		},
 		unset: func(r *cfg.RepoConfig) { r.AddByDefault = false },
+	},
+	"url": {
+		get:   func(r *cfg.RepoConfig) string { return r.URL },
+		set:   func(_ *cfg.Config, r *cfg.RepoConfig, v []string) error { r.URL = v[0]; return nil },
+		unset: func(r *cfg.RepoConfig) { r.URL = "" },
+	},
+	"default_branch": {
+		get:   func(r *cfg.RepoConfig) string { return r.DefaultBranch },
+		set:   func(_ *cfg.Config, r *cfg.RepoConfig, v []string) error { r.DefaultBranch = v[0]; return nil },
+		unset: func(r *cfg.RepoConfig) { r.DefaultBranch = "" },
 	},
 }
 
@@ -313,6 +336,16 @@ func checkRoute(v string) error {
 		return fmt.Errorf("integration must be %s", strings.Join(cfg.IntegrationRoutes, " or "))
 	}
 	return nil
+}
+
+// checkMode rejects an invalid `defaults.mode` value. Clearing is what `unset`
+// is for, so an empty value is not accepted by `set`.
+func checkMode(v string) (layout.Mode, error) {
+	m, err := layout.ParseMode(v)
+	if err != nil || v == "" {
+		return "", fmt.Errorf("mode must be %s or %s", layout.ModeWorktree, layout.ModeClone)
+	}
+	return m, nil
 }
 
 // findProvider returns a pointer to the named provider in c, or nil.

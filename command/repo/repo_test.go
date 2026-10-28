@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"flag"
 	"io"
 	"os"
 	"strings"
@@ -11,13 +12,22 @@ import (
 )
 
 // The group's listing is rendered from Cmd.Subs, so the descriptors are what
-// `git work repos` prints; see TestRunHelp for the dispatch behaviour. None of
-// the four subcommands parses flags of its own - clone forwards git-clone's
-// options verbatim rather than declaring them - hence the nil FlagSets.
+// `git work repos` prints; see TestRunHelp for the dispatch behaviour. List and
+// pull parse no flags; clone and adopt have a git-work-owned --no-register on
+// top of git's own passthrough arguments.
 func TestHelpConformance(t *testing.T) {
 	clitest.CheckGroup(t, Cmd, []*cli.Command{CloneCmd, AdoptCmd, ListCmd, PullCmd})
 	for _, sub := range Cmd.Subs {
-		t.Run(sub.Name, func(t *testing.T) { clitest.Check(t, sub, nil) })
+		t.Run(sub.Name, func(t *testing.T) {
+			var fs *flag.FlagSet
+			switch sub {
+			case CloneCmd:
+				fs = cloneFlagSet(new(bool))
+			case AdoptCmd:
+				fs = adoptFlagSet(new(bool))
+			}
+			clitest.Check(t, sub, fs)
+		})
 	}
 }
 

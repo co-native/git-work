@@ -10,6 +10,15 @@ import (
 	"github.com/co-native/git-work/internal/state"
 )
 
+func agg(t *testing.T, in InstructionsInput) string {
+	t.Helper()
+	got, err := AggregateInstructions(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
 func TestMergeManagedBlockPreservesOutside(t *testing.T) {
 	existing := "<!-- git-work:begin -->\nOLD\n<!-- git-work:end -->\n\n## My notes\nkeep me\n"
 	got := MergeManagedBlock(existing, "NEW CONTENT")
@@ -43,7 +52,7 @@ func TestAggregateInstructions(t *testing.T) {
 
 	// beta reuses an existing branch, so its section must state that branch,
 	// not the folder-level work branch.
-	block := AggregateInstructions(InstructionsInput{
+	block := agg(t, InstructionsInput{
 		ReposRoot: repos, TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []RepoRef{{Name: "alpha", Branch: "PROJ-1-foo"}, {Name: "beta", Branch: "feature/PROJ-1"}},
 	})
@@ -60,7 +69,7 @@ func TestAggregateInstructions(t *testing.T) {
 
 // A repo with no recorded branch falls back to the folder-level branch.
 func TestAggregateInstructionsBranchFallback(t *testing.T) {
-	block := AggregateInstructions(InstructionsInput{
+	block := agg(t, InstructionsInput{
 		ReposRoot: t.TempDir(), TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []RepoRef{{Name: "alpha"}},
 	})
@@ -75,7 +84,7 @@ func TestAggregateInstructionsTicketless(t *testing.T) {
 	repos := t.TempDir()
 	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)
 
-	block := AggregateInstructions(InstructionsInput{
+	block := agg(t, InstructionsInput{
 		ReposRoot: repos, Title: "spike harness", Branch: "spike-harness",
 		Repos: []RepoRef{{Name: "alpha", Branch: "spike-harness"}},
 	})
@@ -90,7 +99,7 @@ func TestAggregateInstructionsTicketless(t *testing.T) {
 // git-work's own contract ships in the binary, so it appears in every work
 // folder with nothing to install per machine.
 func TestAggregateInstructionsEmbedsWorkFolderDoc(t *testing.T) {
-	block := AggregateInstructions(InstructionsInput{
+	block := agg(t, InstructionsInput{
 		ReposRoot: t.TempDir(), TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []RepoRef{{Name: "alpha"}},
 	})
@@ -113,7 +122,7 @@ func TestAggregateInstructionsOverlay(t *testing.T) {
 	}
 
 	t.Run("absent", func(t *testing.T) {
-		if got := AggregateInstructions(in); strings.Contains(got, "operator guidance") {
+		if got := agg(t, in); strings.Contains(got, "operator guidance") {
 			t.Errorf("nothing should be inlined when the overlay is missing:\n%s", got)
 		}
 	})
@@ -121,7 +130,7 @@ func TestAggregateInstructionsOverlay(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
 		// No trailing newline, to prove sections still abut cleanly.
 		os.WriteFile(overlay, []byte("## Helper tools\n\noperator guidance"), 0o644)
-		got := AggregateInstructions(in)
+		got := agg(t, in)
 		if !strings.Contains(got, "operator guidance") {
 			t.Errorf("overlay not inlined:\n%s", got)
 		}
@@ -132,7 +141,7 @@ func TestAggregateInstructionsOverlay(t *testing.T) {
 
 	t.Run("empty file is skipped", func(t *testing.T) {
 		os.WriteFile(overlay, []byte("   \n\n"), 0o644)
-		if got := AggregateInstructions(in); strings.Contains(got, "\n\n\n\n") {
+		if got := agg(t, in); strings.Contains(got, "\n\n\n\n") {
 			t.Errorf("a blank overlay should add nothing:\n%s", got)
 		}
 	})
@@ -145,7 +154,7 @@ func TestAggregateInstructionsSectionOrder(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("## Helper tools\n"), 0o644)
 
-	got := AggregateInstructions(InstructionsInput{
+	got := agg(t, InstructionsInput{
 		ReposRoot: repos, OverlayDir: dir,
 		TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []RepoRef{{Name: "alpha"}},
@@ -174,7 +183,7 @@ func TestWriteManagedIsIdempotent(t *testing.T) {
 		Repos: []RepoRef{{Name: "alpha"}},
 	}
 	for i := 0; i < 3; i++ {
-		if err := WriteManaged(path, AggregateInstructions(in)); err != nil {
+		if err := WriteManaged(path, agg(t, in)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +211,7 @@ func TestAggregateInstructionsNormalisesOverlaySpacing(t *testing.T) {
 	var seen []string
 	for _, tail := range []string{"", "\n", "\n\n", "\n\n\n"} {
 		os.WriteFile(overlay, []byte("## Helper tools\n\nguidance"+tail), 0o644)
-		got := AggregateInstructions(InstructionsInput{
+		got := agg(t, InstructionsInput{
 			ReposRoot: repos, OverlayDir: dir,
 			TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 			Repos: []RepoRef{{Name: "alpha"}},
@@ -234,7 +243,7 @@ func TestAggregateInstructionsOverlayFallback(t *testing.T) {
 		TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []RepoRef{{Name: "alpha"}},
 	}
-	got := AggregateInstructions(in)
+	got := agg(t, in)
 	for _, want := range []string{"operator claude", "alpha claude"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CLAUDE.md overlay should be the fallback for AGENTS.md, missing %q:\n%s", want, got)
@@ -243,7 +252,7 @@ func TestAggregateInstructionsOverlayFallback(t *testing.T) {
 
 	os.WriteFile(filepath.Join(repos, "alpha", "AGENTS.md"), []byte("alpha agents\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("operator agents\n"), 0o644)
-	got = AggregateInstructions(in)
+	got = agg(t, in)
 	for _, want := range []string{"operator agents", "alpha agents"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the overlay named like the setting must win, missing %q:\n%s", want, got)
@@ -256,7 +265,7 @@ func TestAggregateInstructionsOverlayFallback(t *testing.T) {
 	}
 
 	in.File = config.InstructionsClaude
-	got = AggregateInstructions(in)
+	got = agg(t, in)
 	if !strings.Contains(got, "operator claude") || !strings.Contains(got, "alpha claude") {
 		t.Errorf("with CLAUDE.md configured the CLAUDE.md overlays must win:\n%s", got)
 	}
@@ -268,7 +277,7 @@ func TestAggregateInstructionsStripsLeadingComment(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"),
 		[]byte("<!-- generated by make install from: a.md b.md -->\n\n## Helper tools\n\nguidance\n"), 0o644)
-	got := AggregateInstructions(InstructionsInput{
+	got := agg(t, InstructionsInput{
 		ReposRoot: t.TempDir(), OverlayDir: dir,
 		TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 	})
@@ -391,7 +400,7 @@ func TestWriteWorkFolderMigrates(t *testing.T) {
 	work := t.TempDir()
 	st := &state.State{TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
 		Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-foo"}}}
-	if err := WriteWorkFolder(work, t.TempDir(), config.InstructionsClaude, st, nil); err != nil {
+	if err := WriteWorkFolder(work, WorkFolderOptions{ReposRoot: t.TempDir(), File: config.InstructionsClaude}, st, nil); err != nil {
 		t.Fatal(err)
 	}
 	f, _ := os.OpenFile(filepath.Join(work, "CLAUDE.md"), os.O_APPEND|os.O_WRONLY, 0o644)
@@ -399,7 +408,7 @@ func TestWriteWorkFolderMigrates(t *testing.T) {
 	f.Close()
 
 	st.Title = "Fix login properly"
-	if err := WriteWorkFolder(work, t.TempDir(), config.InstructionsAgents, st, nil); err != nil {
+	if err := WriteWorkFolder(work, WorkFolderOptions{ReposRoot: t.TempDir(), File: config.InstructionsAgents}, st, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(work, "CLAUDE.md")); !os.IsNotExist(err) {
@@ -430,5 +439,45 @@ func TestGeneratedFilesCoverBothInstructionsNames(t *testing.T) {
 		if !have[f] {
 			t.Errorf("GeneratedFiles lacks %s", f)
 		}
+	}
+}
+
+func TestAggregateInstructionsModeContract(t *testing.T) {
+	worktree := agg(t, InstructionsInput{Title: "T", Branch: "b"})
+	if !strings.Contains(worktree, "per-feature container holding one git worktree") {
+		t.Errorf("worktree contract missing:\n%s", worktree)
+	}
+	clone := agg(t, InstructionsInput{Mode: "clone", Title: "T", Branch: "b"})
+	if !strings.Contains(clone, "clone-mode work folder") || !strings.Contains(clone, ".worktrees/") {
+		t.Errorf("clone contract missing:\n%s", clone)
+	}
+	if strings.Contains(clone, "per-feature container holding one git worktree") {
+		t.Error("clone contract still claims one worktree per repo")
+	}
+}
+
+func TestRepoOverlaySources(t *testing.T) {
+	repos := t.TempDir()
+	cfgOverlays := t.TempDir()
+	in := InstructionsInput{
+		ReposRoot: repos, RepoOverlayDir: cfgOverlays,
+		TicketID: "T-1", Title: "T", Branch: "b",
+		Repos: []RepoRef{{Name: "alpha"}},
+	}
+	if err := os.MkdirAll(filepath.Join(repos, "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgOverlays, "alpha.md"), []byte("from config dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := agg(t, in); !strings.Contains(got, "from config dir") {
+		t.Errorf("config-dir overlay not inlined:\n%s", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(repos, "alpha", "AGENTS.md"), []byte("from repos root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AggregateInstructions(in); err == nil {
+		t.Error("expected an error when both overlay sources exist")
 	}
 }

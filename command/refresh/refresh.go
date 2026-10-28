@@ -86,11 +86,18 @@ func run(args []string) error {
 	st, workDir, cfg, l := wf.State, wf.Dir, wf.Config, wf.Layout
 
 	if !o.noPull {
-		names := make([]string, len(st.Repos))
-		for i, r := range st.Repos {
-			names[i] = r.Name
+		var names []string
+		for _, r := range st.Repos {
+			if wf.Mode() == layout.ModeClone && workfolder.IntegrateInProgress(l, wf.Dir, r.Name) {
+				fmt.Fprintf(os.Stderr, "git-work: pull %s: an integrate conflict is waiting in %s; resolve or abort it first (skipping)\n", r.Name, l.IntegrateWorktree(wf.Dir, r.Name))
+				continue
+			}
+			names = append(names, r.Name)
 		}
-		pullPrimaries(os.Stdout, os.Stderr, l, names)
+		pullRepos(os.Stdout, os.Stderr, wf.RepoDir, func(name string) string {
+			r, _ := st.Repo(name)
+			return r.DefaultBranch
+		}, names)
 	}
 
 	// Re-fetch provider details for TICKET.md. Ticketless work folders have
@@ -115,34 +122,38 @@ func run(args []string) error {
 			}
 		}
 	}
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, cfg.Instructions(), st, ticket); err != nil {
+	if err := template.WriteWorkFolder(workDir, template.WorkFolderOptions{Mode: wf.Mode(), ReposRoot: l.ReposRoot, File: cfg.Instructions()}, st, ticket); err != nil {
 		return err
 	}
 	fmt.Printf("Refreshed generated files in %s\n", workDir)
 	return nil
 }
 
-// pullPrimaries ff-only-pulls each named repo's default branch in its
-// primary clone (explicitly, so a primary left on another branch still
-// freshens the default branch), printing per-repo results to w. A failed
-// pull (diverged branch, offline, layout problems) is a warning on errw -
-// it never aborts the refresh.
+// pullPrimaries is the worktree-mode wrapper kept for the refresh tests: it
+// resolves the primary of each named repo and pulls its default branch.
 func pullPrimaries(w, errw io.Writer, l layout.Layout, names []string) {
-	for _, name := range names {
-		res, err := pullPrimary(l, name)
-		if err != nil {
-			fmt.Fprintf(errw, "git-work: pull %s: %v (skipping)\n", name, err)
-			continue
-		}
-		fmt.Fprintf(w, "Pulled %s: %s\n", name, res)
-	}
+	pullRepos(w, errw, l.RepoMain, func(string) string { return "" }, names)
 }
 
-// pullPrimary freshens one repo's default branch in its primary clone.
-func pullPrimary(l layout.Layout, name string) (repo.PullResult, error) {
-	main, err := l.RepoMain(name)
-	if err != nil {
-		return repo.PullUpToDate, err
+// pullRepos ff-only-pulls each named repo's default branch in the directory
+// the resolver returns (a primary or a clone), printing per-repo results to w.
+// A failed pull (diverged branch, offline, layout problems) is a warning on
+// errw - it never aborts the refresh.
+func pullRepos(w, errw io.Writer, dirOf func(string) (string, error), recordedOf func(string) string, names []string) {
+	for _, name := range names {
+		dir, err := dirOf(name)
+		if err == nil {
+			var res repo.PullResult
+			if recorded := recordedOf(name); recorded != "" {
+				res, err = repo.PullBranchFFOnly(dir, recorded)
+			} else {
+				res, err = repo.PullDefaultBranch(dir)
+			}
+			if err == nil {
+				fmt.Fprintf(w, "Pulled %s: %s\n", name, res)
+				continue
+			}
+		}
+		fmt.Fprintf(errw, "git-work: pull %s: %v (skipping)\n", name, err)
 	}
-	return repo.PullDefaultBranch(main)
 }

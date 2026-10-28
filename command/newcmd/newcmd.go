@@ -9,11 +9,13 @@ import (
 
 	"github.com/co-native/git-work/internal/cli"
 	"github.com/co-native/git-work/internal/config"
+	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/provider"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
 	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -23,6 +25,8 @@ type options struct {
 	description    string
 	dir            string
 	branch         string
+	mode           string
+	lfsFetchAll    bool
 	noTicket       bool
 	nonInteractive bool
 }
@@ -32,20 +36,22 @@ type options struct {
 // `git work new -h` prints.
 var Cmd = &cli.Command{
 	Name:  "new",
-	Short: "start a new work folder with worktrees",
+	Short: "start a new work folder with worktrees or clones",
 	Args:  "<ticket-id|name>",
 	Synopsis: []string{
 		"git work new <ticket-id> [options]",
 		"git work new -n|--no-ticket <name> [options]",
 	},
 	Long: "Starts a work folder: resolves repos, fetches the ticket's details from the\n" +
-		"matching provider, creates the folder under the work root, adds a worktree\n" +
+		"matching provider, creates the folder under the work root, adds a checkout\n" +
 		"(and branch) per repo, and writes the generated files. Any failure after the\n" +
-		"folder exists rolls back - added worktrees are removed and the folder deleted.\n" +
+		"folder exists rolls back - added checkouts are removed and the folder deleted.\n" +
 		"With -n/--no-ticket the argument is a plain name instead: no provider lookup\n" +
 		"and no TICKET.md, with folder and branch named from its slug. Existing branches\n" +
 		"for the ticket, local or on origin, are offered for reuse; --branch names the\n" +
-		"branch outright instead. Flags may come before or after the positional argument.",
+		"branch outright instead. --mode clone replaces the per-repo worktrees with full\n" +
+		"clones, so the folder is self-contained and needs no primary repos tree. Flags\n" +
+		"may come before or after the positional argument.",
 	Examples: []string{
 		"git work new PROJ-123 --repos api,web",
 		"git work new PROJ-123 --repos api --branch feature/PROJ-123 --non-interactive",
@@ -56,6 +62,8 @@ var Cmd = &cli.Command{
 		{Long: "description", Arg: "<slug>", Desc: "override the slug otherwise derived from the ticket title"},
 		{Long: "dir", Arg: "<name>", Desc: "override the work folder name (default <ticket>-<slug>)"},
 		{Long: "branch", Arg: "<name>", Desc: "this exact branch, reused if it exists or created; skips ticket matching (default <ticket>-<slug>)"},
+		{Long: "mode", Arg: "<worktree|clone>", Desc: "checkout layout; clone makes the folder self-contained (default from defaults.mode)"},
+		{Long: "lfs-fetch-all", Desc: "clone mode: fetch every LFS object, not just the checked-out branch"},
 		{Short: "n", Long: "no-ticket", Desc: "ticketless: the argument is a plain name, no provider lookup and no TICKET.md"},
 		{Long: "non-interactive", Desc: "never prompt; use --repos or the add_by_default repos, fail if ticket branches exist"},
 	},
@@ -69,6 +77,8 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.StringVar(&o.description, "description", "", "description slug override")
 	fs.StringVar(&o.dir, "dir", "", "work folder name override")
 	fs.StringVar(&o.branch, "branch", "", "branch name override")
+	fs.StringVar(&o.mode, "mode", "", "checkout layout: worktree or clone")
+	fs.BoolVar(&o.lfsFetchAll, "lfs-fetch-all", false, "clone mode: fetch every LFS object")
 	fs.BoolVar(&o.noTicket, "no-ticket", false, "ticketless: the argument is a plain name (no provider lookup, no TICKET.md)")
 	fs.BoolVar(&o.noTicket, "n", false, "shorthand for --no-ticket")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of prompting")
@@ -110,6 +120,11 @@ func parseFlags(args []string) (*options, error) {
 		return nil, cli.Usagef("unexpected argument %q after %q: `git work new` takes exactly one <ticket-id|name>", extra[0], o.ticketID)
 	}
 	o.repos = cli.CommaList(o.reposCSV)
+	if o.mode != "" {
+		if _, err := layout.ParseMode(o.mode); err != nil {
+			return nil, cli.Usagef("%v", err)
+		}
+	}
 	if err := repo.CheckBranchArg(o.branch); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
@@ -137,6 +152,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	mode := cfg.Mode()
+	if o.mode != "" {
+		mode, err = layout.ParseMode(o.mode)
+		if err != nil {
+			return cli.Usagef("%v", err)
+		}
+	}
 	tk, err := resolveTicket(o, cfg)
 	if err != nil {
 		return err
@@ -147,12 +169,12 @@ func run(args []string) error {
 	// nothing was named. A flag that could add but never narrow would be the
 	// worse flag.
 	if len(o.repos) == 0 {
-		all, err := l.ListRepos()
+		all, err := workfolder.AvailableRepos(cfg, l, mode)
 		if err != nil {
 			return err
 		}
 		if len(all) == 0 {
-			return fmt.Errorf("no repos found under %s; run `git work clone` first", l.ReposRoot)
+			return fmt.Errorf("no repos found; run `git work clone` or configure `repos.<name>.url` first")
 		}
 		byDefault := defaultRepos(cfg, all)
 		if o.nonInteractive {
@@ -212,15 +234,7 @@ func run(args []string) error {
 	}
 	// Every repo resolves before anything is created: a refusal reports all
 	// repos at once and leaves nothing to roll back.
-	plan, err := repo.ResolveWorkBranches(o.repos, matchID, branch, repo.PlanOpts{
-		ResolveOpts: repo.ResolveOpts{
-			Explicit:       o.branch != "",
-			NonInteractive: o.nonInteractive,
-			Choose:         tui.Select,
-		},
-		MainOf: l.RepoMain,
-		Warn:   warn,
-	})
+	plan, err := resolvePlan(o.repos, matchID, branch, mode, cfg, l, o.nonInteractive, o.branch != "")
 	if err != nil {
 		return err
 	}
@@ -230,42 +244,67 @@ func run(args []string) error {
 	}
 
 	// On any failure after creating the work folder, roll back: remove any
-	// worktrees we added and delete the folder, so the user can re-run cleanly.
+	// checkouts we added and delete the folder, so the user can re-run cleanly.
 	success := false
-	var added []state.Repo
+	var added []workfolder.PlannedRepo
 	defer func() {
 		if success {
 			return
 		}
-		for _, r := range added {
-			main, err := l.RepoMain(r.Name)
-			if err != nil {
-				continue
-			}
-			_ = repo.RemoveWorktree(main, l.Worktree(dirName, r.Name), true)
+		for _, p := range added {
+			_ = p.Remove(workDir)
 		}
 		_ = os.RemoveAll(workDir)
 	}()
 
-	st := &state.State{TicketID: tk.displayID, Title: tk.title, Slug: tk.slug, Branch: branch, Provider: tk.providerName, NoTicket: o.noTicket}
+	st := &state.State{TicketID: tk.displayID, Title: tk.title, Slug: tk.slug, Branch: branch, Provider: tk.providerName, NoTicket: o.noTicket, Mode: mode}
 	for _, p := range plan {
-		if err := p.Choice.Checkout(p.Main, l.Worktree(dirName, p.Name)); err != nil {
+		pr := workfolder.PlannedRepo{Name: p.Name, Choice: p.Choice, Mode: mode, MainDir: p.Main, URL: p.URL, DefaultBranch: p.DefaultBranch, LFSFetchAll: o.lfsFetchAll, Warn: warn}
+		added = append(added, pr)
+		rec, err := pr.Materialize(workDir)
+		if err != nil {
 			return err
 		}
-		rec := state.Repo{Name: p.Name, BranchSource: p.Choice.Source, Branch: p.Choice.Branch}
 		st.Repos = append(st.Repos, rec)
-		added = append(added, rec)
 	}
 
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, cfg.Instructions(), st, &template.TicketDetails{Description: tk.description}); err != nil {
+	if err := template.WriteWorkFolder(workDir, template.WorkFolderOptions{Mode: mode, ReposRoot: l.ReposRoot, File: cfg.Instructions()}, st, &template.TicketDetails{Description: tk.description}); err != nil {
 		return err
 	}
 	if err := st.Save(workDir); err != nil {
 		return err
 	}
 	success = true
-	fmt.Printf("Created work folder %s with %d repo(s)\n", workDir, len(st.Repos))
+	fmt.Printf("Created %s work folder %s with %d repo(s)\n", mode, workDir, len(st.Repos))
 	return nil
+}
+
+// resolvePlan resolves every repo's work branch before the folder exists. Clone
+// mode resolves URLs, default branches and candidates from the remote; worktree
+// mode uses the primary clones as before.
+func resolvePlan(names []string, matchID, branch string, mode layout.Mode, cfg *config.Config, l layout.Layout, nonInteractive, explicit bool) ([]repo.Planned, error) {
+	opts := repo.ResolveOpts{Explicit: explicit, NonInteractive: nonInteractive, Choose: tui.Select}
+	if mode != layout.ModeClone {
+		return repo.ResolveWorkBranches(names, matchID, branch, repo.PlanOpts{ResolveOpts: opts, MainOf: l.RepoMain, Warn: warn})
+	}
+	return repo.ResolveRemoteWorkBranches(names, matchID, branch, repo.RemotePlanOpts{
+		ResolveOpts: opts,
+		SourceOf: func(name string) (repo.RemoteSource, error) {
+			url, err := workfolder.RepoURL(cfg, l, name)
+			if err != nil {
+				return repo.RemoteSource{}, err
+			}
+			def := cfg.RepoDefaultBranch(name)
+			if def == "" {
+				def, err = repo.RemoteDefaultBranch(url)
+				if err != nil {
+					return repo.RemoteSource{}, err
+				}
+			}
+			return repo.RemoteSource{URL: url, DefaultBranch: def}, nil
+		},
+		Warn: warn,
+	})
 }
 
 // warn prints a non-fatal notice in git-work's stderr format.

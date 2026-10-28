@@ -13,7 +13,7 @@ var Cmd = &cli.Command{
 		"A missing file means built-in defaults are used, which is not an error.\n" +
 		"\n" +
 		"keys: paths.repos, paths.work, instructions_file, defaults.integration,\n" +
-		"      repos.<name>.{integration,add_by_default},\n" +
+		"      defaults.mode, repos.<name>.{integration,add_by_default,url,default_branch},\n" +
 		"      providers.<name>.{type,default,folder_case,branch_case,patterns}",
 	Subs: []*cli.Command{ListCmd, GetCmd, SetCmd, UnsetCmd, EditCmd, PathCmd, InitCmd},
 }

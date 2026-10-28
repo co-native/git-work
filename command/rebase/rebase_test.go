@@ -321,7 +321,7 @@ func TestRebaseAllMissingWorktreeSkippedWithNote(t *testing.T) {
 	if err := rebaseAll(&options{all: true}, &out, &errw, l, st, workDir); err != nil {
 		t.Errorf("rebaseAll = %v; want nil (missing worktree is a skip, not a problem)", err)
 	}
-	if !strings.Contains(errw.String(), "gone: worktree missing; skipping") {
+	if !strings.Contains(errw.String(), "gone: checkout missing; skipping") {
 		t.Errorf("stderr = %q; want a skip note", errw.String())
 	}
 }

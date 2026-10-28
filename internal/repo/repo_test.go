@@ -1147,3 +1147,30 @@ func TestAddTrackingWorktree(t *testing.T) {
 		t.Errorf("upstream = %q, want origin/PROJ-1-fix", got)
 	}
 }
+
+func TestRemoteURLAndDefaultBranchFor(t *testing.T) {
+	origin := makeOrigin(t)
+	w := cloneWorkdir(t, origin)
+
+	got, err := RemoteURL(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != origin {
+		t.Errorf("RemoteURL = %q, want %q", got, origin)
+	}
+	def, err := DefaultBranchFor(w, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def != "main" {
+		t.Errorf("DefaultBranchFor empty = %q, want main", def)
+	}
+	def, err = DefaultBranchFor(w, "recorded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def != "recorded" {
+		t.Errorf("DefaultBranchFor recorded = %q, want recorded", def)
+	}
+}

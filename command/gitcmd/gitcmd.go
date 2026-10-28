@@ -135,6 +135,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := workfolder.RefuseInsideWorktrees(cwd, workDir); err != nil {
+		return err
+	}
 	return runAll(o, os.Stdin, os.Stdout, os.Stderr, st, workDir)
 }
 

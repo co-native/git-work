@@ -52,6 +52,50 @@ func RemoteDefaultRef(mainDir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RemoteURL returns dir's origin URL. It is the fallback source for a repo's
+// clone URL when the config registry has none, and the source used by repo
+// adopt to register a primary.
+func RemoteURL(dir string) (string, error) {
+	out, err := git(dir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("origin remote: %w", err)
+	}
+	url := strings.TrimSpace(out)
+	if url == "" {
+		return "", fmt.Errorf("origin remote has no URL")
+	}
+	return url, nil
+}
+
+// DefaultBranchFor returns the default branch to use for dir. A recorded value
+// wins: clone mode has no primary whose checked-out branch can stand in, and a
+// remote default changing mid-work must not silently retarget in-flight work.
+// With no recorded value it falls back to DefaultBranchName.
+func DefaultBranchFor(dir, recorded string) (string, error) {
+	if recorded != "" {
+		return recorded, nil
+	}
+	return DefaultBranchName(dir)
+}
+
+// IsDefaultBranchFor is the mode-aware default-branch guard. A recorded value
+// wins; origin/HEAD is checked next; the local-HEAD fallback is only used for
+// legacy worktree state with no recorded value. The fallback must not run for
+// clone mode, where the only checkout is the work branch and would otherwise
+// name itself the default.
+func IsDefaultBranchFor(dir, recorded, branch string) (bool, error) {
+	if recorded != "" && recorded == branch {
+		return true, nil
+	}
+	if ref, err := RemoteDefaultRef(dir); err == nil {
+		return strings.TrimPrefix(strings.TrimSpace(ref), "origin/") == branch, nil
+	}
+	if recorded != "" {
+		return false, nil
+	}
+	return IsDefaultBranch(dir, branch)
+}
+
 // IsDefaultBranch reports whether branch is the repo's default branch.
 //
 // origin/HEAD is the sound source and is tried first: it is independent of what
@@ -894,7 +938,7 @@ func (c Candidate) String() string {
 // that exist only on origin. A branch present in both places counts once,
 // as the local one. Remote candidates are as fresh as the last fetch.
 func BranchesMatching(mainDir, ticketID string) ([]Candidate, error) {
-	re, err := regexp.Compile(`(?i)(^|[^a-zA-Z0-9])` + regexp.QuoteMeta(ticketID) + `([^a-zA-Z0-9]|$)`)
+	re, err := branchRegex(ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -926,6 +970,28 @@ func BranchesMatching(mainDir, ticketID string) ([]Candidate, error) {
 	return matches, nil
 }
 
+// branchRegex is the boundary-aware, case-insensitive matcher shared by the
+// local and remote branch listings.
+func branchRegex(ticketID string) (*regexp.Regexp, error) {
+	return regexp.Compile(`(?i)(^|[^a-zA-Z0-9])` + regexp.QuoteMeta(ticketID) + `([^a-zA-Z0-9]|$)`)
+}
+
+// matchingBranches filters remote branch names with the shared matcher. All
+// results are remote candidates: a URL has no local refs.
+func matchingBranches(names []string, ticketID string) ([]Candidate, error) {
+	re, err := branchRegex(ticketID)
+	if err != nil {
+		return nil, err
+	}
+	var matches []Candidate
+	for _, name := range names {
+		if re.MatchString(name) {
+			matches = append(matches, Candidate{Branch: name, Remote: true})
+		}
+	}
+	return matches, nil
+}
+
 // DeleteLocalBranch deletes a local branch (force when not merged).
 func DeleteLocalBranch(mainDir, branch string, force bool) error {
 	flag := "-d"
@@ -939,6 +1005,22 @@ func DeleteLocalBranch(mainDir, branch string, force bool) error {
 // DeleteRemoteBranch deletes a branch on origin.
 func DeleteRemoteBranch(mainDir, branch string) error {
 	_, err := git(mainDir, "push", "origin", "--delete", branch)
+	return err
+}
+
+// DeleteRemoteBranchURL deletes a branch when no clone survives to push from.
+// git push needs a repository, so this creates a throwaway bare one.
+func DeleteRemoteBranchURL(url, branch string) error {
+	dir, err := os.MkdirTemp("", "git-work-delete-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	cmd := exec.Command("git", "init", "-q", "--bare", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init --bare: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	_, err = git(dir, "push", url, "--delete", branch)
 	return err
 }
 
@@ -980,4 +1062,107 @@ func RemoteBranchExists(mainDir, branch string) (bool, error) {
 func PruneWorktrees(mainDir string) error {
 	_, err := git(mainDir, "worktree", "prune")
 	return err
+}
+
+// CherryPickInProgress reports whether dir has a cherry-pick stopped mid-way.
+func CherryPickInProgress(dir string) (bool, error) {
+	return gitPathExists(dir, "CHERRY_PICK_HEAD")
+}
+
+// IntegrateResume describes what a leftover clone-mode integrate worktree
+// means. Resumed is true when one was present and clean; Completed is true when
+// its HEAD moved past the base recorded before the transfer, i.e. the operator
+// finished the cherry-pick. An aborted pick leaves HEAD at the base.
+type IntegrateResume struct {
+	Resumed   bool
+	Completed bool
+}
+
+// GitPath resolves a path inside dir's git directory.
+func GitPath(dir, name string) (string, error) {
+	out, err := git(dir, "rev-parse", "--git-path", name)
+	if err != nil {
+		return "", err
+	}
+	p := strings.TrimSpace(out)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
+}
+
+// RevParse resolves a ref in dir to a full SHA.
+func RevParse(dir, ref string) (string, error) {
+	out, err := git(dir, "rev-parse", "--verify", ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// WriteIntegrateMarker records the local default branch SHA before a transfer
+// starts, in the temp worktree's git dir. It is how a later run tells a
+// completed cherry-pick from an aborted one when the resolved patch no longer
+// matches the original commit.
+func WriteIntegrateMarker(dir, base string) error {
+	path, err := GitPath(dir, "git-work-integrate")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(base+"\n"), 0o644)
+}
+
+// ReadIntegrateMarker returns the recorded base SHA, or "" when absent.
+func ReadIntegrateMarker(dir string) (string, error) {
+	path, err := GitPath(dir, "git-work-integrate")
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// PrepareIntegrateWorktree checks a possible clone-mode integrate checkout
+// before a new one is created. A path that is absent is fine. A pick still in
+// progress, or uncommitted work, is refused with the path in the message. A
+// clean leftover from an interrupted run is removed and reported as resumed;
+// its marker and HEAD decide whether the pick was completed or aborted.
+func PrepareIntegrateWorktree(cloneDir, path string) (IntegrateResume, error) {
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return IntegrateResume{}, nil
+	}
+	inProgress, err := CherryPickInProgress(path)
+	if err != nil {
+		return IntegrateResume{}, err
+	}
+	if inProgress {
+		return IntegrateResume{}, fmt.Errorf("an integrate cherry-pick is in progress in %s; resolve it there with `git cherry-pick --continue`, or run `git cherry-pick --abort`, then re-run integrate", path)
+	}
+	dirty, err := HasUncommittedChanges(path)
+	if err != nil {
+		return IntegrateResume{}, err
+	}
+	if dirty {
+		return IntegrateResume{}, fmt.Errorf("the integrate worktree %s has uncommitted changes; commit, stash or remove them before re-running", path)
+	}
+	base, err := ReadIntegrateMarker(path)
+	if err != nil {
+		return IntegrateResume{}, err
+	}
+	head, err := RevParse(path, "HEAD")
+	if err != nil {
+		return IntegrateResume{}, err
+	}
+	if err := RemoveWorktree(cloneDir, path, false); err != nil {
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			return IntegrateResume{}, fmt.Errorf("remove clean integrate worktree %s: %v", path, err)
+		}
+	}
+	return IntegrateResume{Resumed: true, Completed: base != "" && head != base}, nil
 }

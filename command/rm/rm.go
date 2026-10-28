@@ -1,5 +1,5 @@
 // Package rm implements `git work rm <repo>`: a scoped, single-repo version
-// of `done` that tears down one repo's worktree/branches, drops it from the
+// of `done` that tears down one repo's checkout/branches, drops it from the
 // work folder's state, and refreshes the README/instructions managed blocks -
 // leaving the rest of the work folder (and any other repos) intact.
 package rm
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
+	gitrepo "github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/teardown"
 	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
@@ -129,9 +130,33 @@ func run(args []string) error {
 		DeleteRemote: o.deleteRemote,
 		Force:        o.force,
 		NoFetch:      o.noFetch,
+		Mode:         st.Mode.OrDefault(),
+		RepoDir: func(name string) (string, error) {
+			return workfolder.RepoDirFor(l, st, workDir, name)
+		},
+		RemoteURL: func(name string) (string, error) {
+			return workfolder.RepoURL(wf.Config, l, name)
+		},
 	}
 
-	if err := teardown.Gate(teardown.CheckRepo(to, l, r, workDir), o.force); err != nil {
+	problems := teardown.CheckRepo(to, l, r, workDir)
+	left, lerr := teardown.RepoLeftovers(workDir, o.repo)
+	if lerr != nil {
+		problems = append(problems, fmt.Sprintf("%s: inspect .worktrees: %v", o.repo, lerr))
+	} else if len(left) > 0 {
+		if o.force {
+			if err := teardown.RemoveLeftovers(workDir, left); err != nil {
+				return fmt.Errorf("remove leftover worktrees for %s: %w", o.repo, err)
+			}
+			if dir, derr := wf.RepoDir(o.repo); derr == nil {
+				_ = gitrepo.PruneWorktrees(dir)
+			}
+		} else {
+			problems = append(problems, fmt.Sprintf("%s: leftover worktree(s) under .worktrees: %s (use --force to discard them)", o.repo, strings.Join(left, ", ")))
+		}
+	}
+
+	if err := teardown.Gate(problems, o.force); err != nil {
 		return err
 	}
 
@@ -145,7 +170,7 @@ func run(args []string) error {
 
 	// Re-aggregate the README.md and instructions file managed blocks from
 	// the repos that remain.
-	if err := template.WriteWorkFolder(workDir, l.ReposRoot, wf.Config.Instructions(), st, nil); err != nil {
+	if err := template.WriteWorkFolder(workDir, template.WorkFolderOptions{Mode: wf.Mode(), ReposRoot: l.ReposRoot, File: wf.Config.Instructions()}, st, nil); err != nil {
 		return err
 	}
 

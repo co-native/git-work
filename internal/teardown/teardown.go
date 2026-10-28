@@ -18,7 +18,23 @@ import (
 // Options selects which branches a teardown deletes and how safety checks
 // behave. Force overrides safety-check problems (and force-deletes worktrees);
 // NoFetch skips the pre-merged-check fetch.
-type Options struct{ DeleteLocal, DeleteRemote, Force, NoFetch bool }
+//
+// Mode and the two resolvers make the shared path mode-aware without importing
+// state/config here: RepoDir returns a primary or a clone, and RemoteURL is the
+// fallback used to delete a remote branch after the clone is already gone.
+type Options struct {
+	DeleteLocal, DeleteRemote, Force, NoFetch bool
+	Mode                                      layout.Mode
+	RepoDir                                   func(name string) (string, error)
+	RemoteURL                                 func(name string) (string, error)
+}
+
+func repoDir(o Options, l layout.Layout, name string) (string, error) {
+	if o.RepoDir != nil {
+		return o.RepoDir(name)
+	}
+	return l.RepoMain(name)
+}
 
 // Gate decides whether a run proceeds past the problems its checks found: an
 // error naming them when force is unset, otherwise a note on stderr that the
@@ -104,7 +120,7 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 		return problems
 	}
 
-	main, err := l.RepoMain(r.Name)
+	main, err := repoDir(o, l, r.Name)
 	if err != nil {
 		warnProblem("%s: %v", r.Name, err)
 		reportUnpushed()
@@ -120,7 +136,7 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 	// is so the operator learns before any repo is torn down rather than
 	// discovering it as a mid-run failure. Worded to say --force will not help,
 	// since unlike every other problem here it genuinely will not.
-	if isDefault, derr := repo.IsDefaultBranch(main, r.Branch); derr != nil {
+	if isDefault, derr := repo.IsDefaultBranchFor(main, r.DefaultBranch, r.Branch); derr != nil {
 		warnProblem("%s: cannot determine the default branch: %v", r.Name, derr)
 	} else if isDefault {
 		addProblem("%s: %s is the repo's default branch and will not be deleted (--force does not override this)", r.Name, r.Branch)
@@ -137,9 +153,13 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 	}
 	target, err := repo.RemoteDefaultRef(main)
 	if err != nil {
-		warnProblem("%s: could not determine default branch: %v", r.Name, err)
-		reportUnpushed()
-		return problems
+		def, derr := repo.DefaultBranchFor(main, r.DefaultBranch)
+		if derr != nil {
+			warnProblem("%s: could not determine default branch: %v", r.Name, err)
+			reportUnpushed()
+			return problems
+		}
+		target = def
 	}
 
 	// Verify containment once and share the verdict between the unpushed
@@ -204,7 +224,7 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 	fail := func(format string, a ...any) {
 		failures = append(failures, fmt.Sprintf(format, a...))
 	}
-	main, err := l.RepoMain(r.Name)
+	main, err := repoDir(o, l, r.Name)
 	if err != nil {
 		fail("%s: %v", r.Name, err)
 		return failures
@@ -219,7 +239,7 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 	// removing a worktree that sits on the default branch harms nothing, since
 	// the branch itself survives in the primary.
 	if o.DeleteLocal || o.DeleteRemote {
-		isDefault, derr := repo.IsDefaultBranch(main, r.Branch)
+		isDefault, derr := repo.IsDefaultBranchFor(main, r.DefaultBranch, r.Branch)
 		switch {
 		case derr != nil:
 			fail("%s: cannot determine the default branch (%v); refusing to delete %s", r.Name, derr, r.Branch)
@@ -230,6 +250,64 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 		}
 	}
 	wt := filepath.Join(workDir, r.Name)
+	if o.Mode == layout.ModeClone {
+		_, statErr := os.Stat(wt)
+		cloneExists := statErr == nil
+		if o.DeleteRemote {
+			var url string
+			if !cloneExists {
+				if o.RemoteURL == nil {
+					fail("%s: clone is gone and no URL is configured to delete remote branch %s", r.Name, r.Branch)
+					return failures
+				}
+				url, err = o.RemoteURL(r.Name)
+				if err != nil {
+					fail("%s: %v", r.Name, err)
+					return failures
+				}
+			}
+			exists := false
+			if cloneExists {
+				exists, err = repo.RemoteBranchExists(main, r.Branch)
+			} else {
+				exists, err = repo.RemoteBranchExistsAt(url, r.Branch)
+			}
+			switch {
+			case err != nil:
+				fail("%s: check remote branch %s: %v", r.Name, r.Branch, err)
+				return failures
+			case !exists:
+				fmt.Fprintf(os.Stderr, "git-work: %s: remote branch %s already deleted; skipping\n", r.Name, r.Branch)
+			case cloneExists:
+				if err := repo.DeleteRemoteBranch(main, r.Branch); err != nil {
+					fail("%s: delete remote branch %s: %v", r.Name, r.Branch, err)
+					return failures // keep the clone so a re-run can retry
+				}
+			default:
+				if err := repo.DeleteRemoteBranchURL(url, r.Branch); err != nil {
+					fail("%s: delete remote branch %s: %v", r.Name, r.Branch, err)
+					return failures
+				}
+			}
+		}
+		if o.DeleteLocal {
+			fmt.Fprintf(os.Stderr, "git-work: %s: local branch %s is removed with the clone\n", r.Name, r.Branch)
+		}
+		if cloneExists {
+			if err := os.RemoveAll(wt); err != nil {
+				fail("%s: remove clone: %v", r.Name, err)
+				return failures
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "git-work: %s: clone already removed\n", r.Name)
+		}
+		st.RemoveRepo(r.Name)
+		if err := st.Save(workDir); err != nil {
+			fail("%s: save state: %v", r.Name, err)
+		}
+		return failures
+	}
+
 	if _, err := os.Stat(wt); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "git-work: %s: worktree already removed; pruning stale registration\n", r.Name)
 		if err := repo.PruneWorktrees(main); err != nil {

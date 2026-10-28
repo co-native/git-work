@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
 )
 
@@ -452,8 +453,10 @@ func TestReposCloneAliasAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repos list: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "alpha (main)") || !strings.Contains(out, "beta (main)") {
-		t.Errorf("repos list should show both repos with their default branch, got:\n%s", out)
+	for _, want := range []string{"alpha", "beta", "main"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("repos list missing %q, got:\n%s", want, out)
+		}
 	}
 	if strings.Contains(out, "drift") {
 		t.Errorf("fresh clones should have no drift, got:\n%s", out)
@@ -689,5 +692,333 @@ func TestDoneRemovalGuard(t *testing.T) {
 	}
 	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
 		t.Errorf("work folder not removed with --remove-all")
+	}
+}
+
+func TestCloneModeNewPushDone(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	ob := makeOriginIn(t, home, "beta")
+	cfgPath := filepath.Join(home, ".config", "git-work", "config.yaml")
+	cfg := "paths:\n  repos: " + reposRoot + "\n  work: " + workRoot + "\n" +
+		"defaults:\n  mode: clone\n" +
+		"repos:\n  alpha:\n    url: " + oa + "\n  beta:\n    url: " + ob + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := gwRun(t, bin, home, env, "new", "PROJ-1", "--repos", "alpha,beta", "--branch", "PROJ-1-x", "--non-interactive")
+	if err != nil {
+		t.Fatalf("new clone mode: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-1-proj-1")
+	for _, name := range []string{"alpha", "beta"} {
+		repoDir := filepath.Join(workDir, name)
+		if fi, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil || !fi.IsDir() {
+			t.Fatalf("%s is not a full clone (.git dir): %v", name, err)
+		}
+		if got := strings.TrimSpace(shOut(t, repoDir, "git", "branch", "--show-current")); got != "PROJ-1-x" {
+			t.Errorf("%s branch = %q, want PROJ-1-x", name, got)
+		}
+		if got := strings.TrimSpace(shOut(t, repoDir, "git", "rev-parse", "--verify", "main")); got == "" {
+			t.Errorf("%s has no local main", name)
+		}
+	}
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode != "clone" {
+		t.Errorf("state mode = %q, want clone", st.Mode)
+	}
+	for _, r := range st.Repos {
+		if r.DefaultBranch != "main" {
+			t.Errorf("%s default branch = %q, want main", r.Name, r.DefaultBranch)
+		}
+	}
+	if !strings.Contains(shOut(t, workDir, "cat", "README.md"), "PROJ-1") {
+		t.Error("README.md missing the ticket")
+	}
+	if !strings.Contains(shOut(t, workDir, "cat", "AGENTS.md"), "one full git\nclone per participating repo") {
+		t.Error("AGENTS.md does not carry the clone-mode contract")
+	}
+
+	// Commit and push from the clone.
+	os.WriteFile(filepath.Join(workDir, "alpha", "work.txt"), []byte("x\n"), 0o644)
+	sh(t, filepath.Join(workDir, "alpha"), "git", "config", "user.email", "t@t.t")
+	sh(t, filepath.Join(workDir, "alpha"), "git", "config", "user.name", "t")
+	sh(t, filepath.Join(workDir, "alpha"), "git", "add", "work.txt")
+	sh(t, filepath.Join(workDir, "alpha"), "git", "commit", "-qm", "work")
+	if out, err := gwRun(t, bin, workDir, env, "push", "--all"); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+
+	if out, err := gwRun(t, bin, home, env, "done", "PROJ-1-proj-1", "--non-interactive", "--force"); err != nil {
+		t.Fatalf("done: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Fatal("clone-mode work folder not removed")
+	}
+}
+
+func writeCloneModeConfig(t *testing.T, home, reposRoot, workRoot string, urls map[string]string) {
+	t.Helper()
+	cfgPath := filepath.Join(home, ".config", "git-work", "config.yaml")
+	cfg := "paths:\n  repos: " + reposRoot + "\n  work: " + workRoot + "\n" +
+		"defaults:\n  mode: clone\nrepos:\n"
+	for name, url := range urls {
+		cfg += "  " + name + ":\n    url: " + url + "\n"
+	}
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloneModeAdd(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	ob := makeOriginIn(t, home, "beta")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": oa, "beta": ob})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-2", "--repos", "alpha", "--branch", "PROJ-2-x", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-2-proj-2")
+	if out, err := gwRun(t, bin, workDir, env, "add", "--repos", "beta", "--non-interactive"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	if fi, err := os.Stat(filepath.Join(workDir, "beta", ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("beta was not cloned: %v", err)
+	}
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Repos) != 2 {
+		t.Errorf("state has %d repos, want 2", len(st.Repos))
+	}
+}
+
+func TestCloneModeRefreshRebaseIntegrate(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-3", "--repos", "alpha", "--branch", "PROJ-3-x", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-3-proj-3")
+	clone := filepath.Join(workDir, "alpha")
+	sh(t, clone, "git", "config", "user.email", "t@t.t")
+	sh(t, clone, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(clone, "feature.txt"), []byte("x\n"), 0o644)
+	sh(t, clone, "git", "add", "feature.txt")
+	sh(t, clone, "git", "commit", "-qm", "feature")
+
+	// Advance origin/main from a seed clone, then refresh/rebase the feature
+	// branch onto the moved default.
+	seed := filepath.Join(home, "seed-alpha")
+	os.WriteFile(filepath.Join(seed, "main.txt"), []byte("m\n"), 0o644)
+	sh(t, seed, "git", "add", "main.txt")
+	sh(t, seed, "git", "commit", "-qm", "main moves")
+	sh(t, seed, "git", "push", "-q", "origin", "main")
+
+	if out, err := gwRun(t, bin, workDir, env, "refresh"); err != nil {
+		t.Fatalf("refresh: %v\n%s", err, out)
+	}
+	if out, err := gwRun(t, bin, workDir, env, "rebase", "alpha"); err != nil {
+		t.Fatalf("rebase: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(shOut(t, clone, "git", "log", "-1", "--format=%s", "main")); got != "main moves" {
+		t.Errorf("local main = %q, want the refreshed commit", got)
+	}
+	if got := strings.TrimSpace(shOut(t, clone, "git", "merge-base", "--is-ancestor", "main", "PROJ-3-x")); got != "" {
+		// command exits nonzero on failure; shOut would have failed
+	}
+
+	if out, err := gwRun(t, bin, workDir, env, "integrate", "alpha", "--push"); err != nil {
+		t.Fatalf("integrate: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(shOut(t, origin, "git", "log", "-1", "--format=%s", "main")); got != "feature" {
+		t.Errorf("origin/main = %q, want feature", got)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".worktrees", "integrate-alpha")); !os.IsNotExist(err) {
+		t.Error("integrate worktree was not cleaned up")
+	}
+}
+
+func TestCloneModeIntegrateConflictResume(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-4", "--repos", "alpha", "--branch", "PROJ-4-x", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-4-proj-4")
+	clone := filepath.Join(workDir, "alpha")
+	sh(t, clone, "git", "config", "user.email", "t@t.t")
+	sh(t, clone, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(clone, "f.txt"), []byte("feature\n"), 0o644)
+	sh(t, clone, "git", "add", "f.txt")
+	sh(t, clone, "git", "commit", "-qm", "feature edit")
+
+	seed := filepath.Join(home, "seed-alpha")
+	os.WriteFile(filepath.Join(seed, "f.txt"), []byte("main\n"), 0o644)
+	sh(t, seed, "git", "add", "f.txt")
+	sh(t, seed, "git", "commit", "-qm", "main edit")
+	sh(t, seed, "git", "push", "-q", "origin", "main")
+
+	out, err := gwRun(t, bin, workDir, env, "integrate", "alpha")
+	if err == nil {
+		t.Fatalf("expected a conflict, got:\n%s", out)
+	}
+	temp := filepath.Join(workDir, ".worktrees", "integrate-alpha")
+	if _, err := os.Stat(temp); err != nil {
+		t.Fatalf("conflict did not leave the integrate worktree: %v\n%s", err, out)
+	}
+	if out, err := gwRun(t, bin, workDir, env, "rebase", "alpha"); err == nil || !strings.Contains(out, "integrate conflict is waiting") {
+		t.Fatalf("rebase during an integrate conflict = %v, want a refusal:\n%s", err, out)
+	}
+	out, err = gwRun(t, bin, workDir, env, "refresh")
+	if err != nil || !strings.Contains(out, "integrate conflict is waiting") {
+		t.Fatalf("refresh during an integrate conflict = %v, want a skip warning:\n%s", err, out)
+	}
+
+	sh(t, temp, "git", "config", "user.email", "t@t.t")
+	sh(t, temp, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(temp, "f.txt"), []byte("resolved\n"), 0o644)
+	sh(t, temp, "git", "add", "f.txt")
+	sh(t, temp, "git", "cherry-pick", "--continue")
+
+	if out, err := gwRun(t, bin, workDir, env, "integrate", "alpha", "--push"); err != nil {
+		t.Fatalf("resume integrate: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(temp); !os.IsNotExist(err) {
+		t.Error("resume did not clean up the integrate worktree")
+	}
+	if got := strings.TrimSpace(shOut(t, origin, "git", "show", "main:f.txt")); got != "resolved" {
+		t.Errorf("origin/main file = %q, want resolved", got)
+	}
+}
+
+func makeLFSOriginIn(t *testing.T, home, name string) string {
+	t.Helper()
+	origin := filepath.Join(home, name+".git")
+	sh(t, "", "git", "init", "-q", "--bare", "-b", "main", origin)
+	seed := filepath.Join(home, "seed-"+name)
+	sh(t, "", "git", "clone", "-q", origin, seed)
+	sh(t, seed, "git", "config", "user.email", "t@t.t")
+	sh(t, seed, "git", "config", "user.name", "t")
+	sh(t, seed, "git", "lfs", "install", "--local")
+	sh(t, seed, "git", "lfs", "track", "*.bin")
+	os.WriteFile(filepath.Join(seed, "main.bin"), []byte("main-lfs\n"), 0o644)
+	sh(t, seed, "git", "add", ".gitattributes", "main.bin")
+	sh(t, seed, "git", "commit", "-qm", "main lfs")
+	sh(t, seed, "git", "push", "-q", "origin", "main")
+	// A second branch with its own LFS object, which a normal branch clone
+	// does not need until fetch-all.
+	sh(t, seed, "git", "switch", "-q", "-c", "other")
+	os.WriteFile(filepath.Join(seed, "other.bin"), []byte("other-lfs\n"), 0o644)
+	sh(t, seed, "git", "add", "other.bin")
+	sh(t, seed, "git", "commit", "-qm", "other lfs")
+	sh(t, seed, "git", "push", "-q", "origin", "other")
+	return origin
+}
+
+func TestCloneModeLFSFetchAll(t *testing.T) {
+	if !repo.LFSInstalled() {
+		t.Skip("git-lfs not installed")
+	}
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeLFSOriginIn(t, home, "alpha")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-5", "--repos", "alpha", "--branch", "PROJ-5-x", "--non-interactive", "--lfs-fetch-all"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	clone := filepath.Join(workRoot, "PROJ-5-proj-5", "alpha")
+	data, err := os.ReadFile(filepath.Join(clone, "main.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(string(data), "version https://git-lfs") {
+		t.Errorf("main.bin is still an LFS pointer:\n%s", data)
+	}
+	objects := 0
+	filepath.Walk(filepath.Join(clone, ".git", "lfs", "objects"), func(path string, info os.FileInfo, err error) error {
+		if err == nil && info != nil && !info.IsDir() {
+			objects++
+		}
+		return nil
+	})
+	if objects < 2 {
+		t.Errorf("LFS store has %d object(s); --lfs-fetch-all should include the other branch's object", objects)
+	}
+}
+
+func TestCloneModeRelocation(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	ob := makeOriginIn(t, home, "beta")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": oa, "beta": ob})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-6", "--repos", "alpha,beta", "--branch", "PROJ-6-x", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	oldDir := filepath.Join(workRoot, "PROJ-6-proj-6")
+	clone := filepath.Join(oldDir, "alpha")
+	sh(t, clone, "git", "config", "user.email", "t@t.t")
+	sh(t, clone, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(clone, "moved.txt"), []byte("x\n"), 0o644)
+	sh(t, clone, "git", "add", "moved.txt")
+	sh(t, clone, "git", "commit", "-qm", "moved")
+
+	newDir := filepath.Join(home, "relocated", "PROJ-6-proj-6")
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldDir, newDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"push", "alpha"},
+		{"refresh"},
+		{"rebase", "alpha"},
+	} {
+		if out, err := gwRun(t, bin, newDir, env, args...); err != nil {
+			t.Fatalf("%v after relocation: %v\n%s", args, err, out)
+		}
+	}
+	if out, err := gwRun(t, bin, newDir, env, "done", newDir, "--non-interactive", "--delete-remote", "--force"); err != nil {
+		t.Fatalf("done after relocation: %v\n%s", err, out)
+	}
+}
+
+func TestCloneModeRmForceCleansFolderLeftovers(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	ob := makeOriginIn(t, home, "beta")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": oa, "beta": ob})
+	if out, err := gwRun(t, bin, home, env, "new", "PROJ-7", "--repos", "alpha,beta", "--branch", "PROJ-7-x", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+	workDir := filepath.Join(workRoot, "PROJ-7-proj-7")
+	agentAlpha := filepath.Join(workDir, ".worktrees", "agent-x", "alpha")
+	agentBeta := filepath.Join(workDir, ".worktrees", "agent-x", "beta")
+	integrateAlpha := filepath.Join(workDir, ".worktrees", "integrate-alpha")
+	for _, dir := range []string{agentAlpha, agentBeta, integrateAlpha} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := gwRun(t, bin, workDir, env, "rm", "alpha", "--non-interactive", "--force"); err != nil {
+		t.Fatalf("rm --force: %v\n%s", err, out)
+	}
+	for _, dir := range []string{agentAlpha, integrateAlpha} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived rm --force", dir)
+		}
+	}
+	if _, err := os.Stat(agentBeta); err != nil {
+		t.Errorf("other repo's agent worktree was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "alpha")); !os.IsNotExist(err) {
+		t.Error("alpha clone survived rm")
 	}
 }

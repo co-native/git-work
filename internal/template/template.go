@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/co-native/git-work/internal/config"
+	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/state"
 )
 
@@ -32,19 +33,25 @@ type TicketDetails struct {
 	Description string
 }
 
+// WorkFolderOptions is everything WriteWorkFolder needs beyond the state: the
+// layout mode, where overlays live, and the instructions file name.
+//
+// ReposRoot and the overlay directories are resolved paths (layout.Layout's),
+// not raw config values, so an unexpanded ~ cannot silently drop overlays.
+// Empty overlay directories are filled with the config defaults.
+type WorkFolderOptions struct {
+	Mode           layout.Mode
+	ReposRoot      string
+	File           string
+	OverlayDir     string
+	RepoOverlayDir string
+}
+
 // WriteWorkFolder renders the work folder's generated files from st: the
 // README.md and instructions file managed blocks always, and TICKET.md when
 // ticket is given and the folder has a ticket (a ticketless folder never gets
 // one).
-//
-// reposRoot is the resolved repos root (layout.Layout's), not the raw config
-// value: it locates the per-repo overlays on disk, so an unexpanded ~ would
-// find none and silently drop them from the generated file.
-//
-// file is the instructions file name (Config.Instructions). An instructions
-// file the folder holds under the other name is migrated first, see
-// MigrateInstructions.
-func WriteWorkFolder(workDir, reposRoot, file string, st *state.State, ticket *TicketDetails) error {
+func WriteWorkFolder(workDir string, opts WorkFolderOptions, st *state.State, ticket *TicketDetails) error {
 	title := st.Title
 	if ticket != nil && ticket.Title != "" {
 		title = ticket.Title
@@ -65,19 +72,36 @@ func WriteWorkFolder(workDir, reposRoot, file string, st *state.State, ticket *T
 		Readme(st.DisplayName(), st.Branch, repos)); err != nil {
 		return err
 	}
+	file := opts.File
+	if file == "" {
+		file = config.InstructionsAgents
+	}
 	if err := MigrateInstructions(workDir, file); err != nil {
 		return err
 	}
-	return WriteManaged(filepath.Join(workDir, file),
-		AggregateInstructions(InstructionsInput{
-			File:       file,
-			ReposRoot:  reposRoot,
-			OverlayDir: config.OverlayDir(),
-			TicketID:   st.TicketID,
-			Title:      title,
-			Branch:     st.Branch,
-			Repos:      refs,
-		}))
+	overlayDir := opts.OverlayDir
+	if overlayDir == "" {
+		overlayDir = config.OverlayDir()
+	}
+	repoOverlayDir := opts.RepoOverlayDir
+	if repoOverlayDir == "" {
+		repoOverlayDir = config.RepoOverlayDir()
+	}
+	block, err := AggregateInstructions(InstructionsInput{
+		Mode:           opts.Mode,
+		File:           file,
+		ReposRoot:      opts.ReposRoot,
+		OverlayDir:     overlayDir,
+		RepoOverlayDir: repoOverlayDir,
+		TicketID:       st.TicketID,
+		Title:          title,
+		Branch:         st.Branch,
+		Repos:          refs,
+	})
+	if err != nil {
+		return err
+	}
+	return WriteManaged(filepath.Join(workDir, file), block)
 }
 
 // MigrateInstructions moves a generated instructions file that workDir holds
@@ -170,12 +194,20 @@ type RepoRef struct {
 // it. `git work refresh` propagates an upgrade.
 //
 //go:embed workfolder.md
-var workFolderDoc string
+var workFolderWorktreeDoc string
+
+// workFolderCloneDoc is the clone-mode counterpart: full clones, the reserved
+// .worktrees directory, and the subagent and LFS rules that follow from them.
+//
+//go:embed workfolder-clone.md
+var workFolderCloneDoc string
 
 // InstructionsInput is everything AggregateInstructions needs. It is a struct
 // rather than a parameter list because the two overlay sources pushed it past
 // the point where positional arguments stayed readable.
 type InstructionsInput struct {
+	// Mode selects the embedded work folder contract: worktree or clone.
+	Mode layout.Mode
 	// File is the instructions file name being generated. It also sets the
 	// overlay lookup order: an overlay named like File is preferred, and one
 	// under the other name is the fallback, so a switch of the setting does
@@ -188,6 +220,10 @@ type InstructionsInput struct {
 	// inlined for every work folder, normally config.OverlayDir(). Empty, or
 	// a directory with no overlay, is fine.
 	OverlayDir string
+	// RepoOverlayDir holds <repo>.md fallbacks, normally
+	// config.RepoOverlayDir(). A repos-root overlay and a config-dir overlay
+	// for the same repo is an error.
+	RepoOverlayDir string
 	// TicketID is empty for a ticketless work folder, which renders the
 	// title alone.
 	TicketID string
@@ -205,7 +241,7 @@ type InstructionsInput struct {
 // folder contract, then the operator's overlay, then one section per repo with
 // that repo's overlay inlined. General rules precede repo specifics, and the
 // header stays first so the block still opens by naming the folder.
-func AggregateInstructions(in InstructionsInput) string {
+func AggregateInstructions(in InstructionsInput) (string, error) {
 	file := in.File
 	if file == "" {
 		file = config.InstructionsAgents
@@ -217,7 +253,11 @@ func AggregateInstructions(in InstructionsInput) string {
 		fmt.Fprintf(&sb, "# %s: %s\nBranch: %s\n", in.TicketID, in.Title, in.Branch)
 	}
 
-	appendFile(&sb, workFolderDoc)
+	doc := workFolderWorktreeDoc
+	if in.Mode == layout.ModeClone {
+		doc = workFolderCloneDoc
+	}
+	appendFile(&sb, doc)
 	if in.OverlayDir != "" {
 		appendOverlay(&sb, in.OverlayDir, file)
 	}
@@ -229,9 +269,11 @@ func AggregateInstructions(in InstructionsInput) string {
 			b = in.Branch
 		}
 		fmt.Fprintf(&sb, "\n## %s (./%s)\nBranch: %s\n", name, name, b)
-		appendOverlay(&sb, filepath.Join(in.ReposRoot, name), file)
+		if err := appendRepoOverlay(&sb, in.ReposRoot, in.RepoOverlayDir, name, file); err != nil {
+			return "", err
+		}
 	}
-	return sb.String()
+	return sb.String(), nil
 }
 
 // appendOverlay inlines the overlay found in dir: <dir>/<file> if it exists,
@@ -243,6 +285,44 @@ func appendOverlay(sb *strings.Builder, dir, file string) {
 			return
 		}
 	}
+}
+
+// appendRepoOverlay inlines one repo's overlay. The repos-root source follows
+// the instructions file name; the config-dir fallback is always <repo>.md.
+// Both existing is an error rather than a silent precedence choice, because
+// either one is a deliberate operator edit.
+func appendRepoOverlay(sb *strings.Builder, reposRoot, repoOverlayDir, repo, file string) error {
+	rootPath := ""
+	for _, name := range []string{file, config.OtherInstructionsFile(file)} {
+		p := filepath.Join(reposRoot, repo, name)
+		if _, err := os.Stat(p); err == nil {
+			rootPath = p
+			break
+		}
+	}
+	cfgPath := ""
+	if repoOverlayDir != "" {
+		p := filepath.Join(repoOverlayDir, repo+".md")
+		if _, err := os.Stat(p); err == nil {
+			cfgPath = p
+		}
+	}
+	if rootPath != "" && cfgPath != "" {
+		return fmt.Errorf("repo %s has two overlays: %s and %s; keep exactly one", repo, rootPath, cfgPath)
+	}
+	path := rootPath
+	if path == "" {
+		path = cfgPath
+	}
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	appendFile(sb, string(data))
+	return nil
 }
 
 // appendFile writes inlined content after a blank line, collapsing whatever

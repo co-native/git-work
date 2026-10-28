@@ -15,6 +15,7 @@ import (
 	teardownpkg "github.com/co-native/git-work/internal/teardown"
 	"github.com/co-native/git-work/internal/template"
 	"github.com/co-native/git-work/internal/tui"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 type options struct {
@@ -35,7 +36,7 @@ var Cmd = &cli.Command{
 	Short:    "tear down a work folder",
 	Args:     "<dir>",
 	Synopsis: []string{"git work done <dir> [options]"},
-	Long: "Tears down a work folder: removes each repo's worktree, deletes branches when\n" +
+	Long: "Tears down a work folder: removes each repo's checkout, deletes branches when\n" +
 		"asked, then removes the folder. <dir> is a bare name resolved under the work\n" +
 		"root, or a path. Checks and teardown run per repo, failures are collected at\n" +
 		"the end, and a re-run resumes exactly the repos still outstanding. --force\n" +
@@ -103,7 +104,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, l, err := config.LoadLayout()
+	cfg, l, err := config.LoadLayout()
 	if err != nil {
 		return err
 	}
@@ -118,6 +119,13 @@ func run(args []string) error {
 	}
 	workDir, err = filepath.Abs(workDir)
 	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if err := workfolder.RefuseInsideWorktrees(cwd, workDir); err != nil {
 		return err
 	}
 	st, err := state.Load(workDir)
@@ -171,7 +179,9 @@ func run(args []string) error {
 		}
 	}
 
-	if err := teardownpkg.Gate(runChecks(o, l, st, workDir), o.force); err != nil {
+	problems := runChecks(o, cfg, l, st, workDir)
+	problems = append(problems, leftoverProblems(workDir)...)
+	if err := teardownpkg.Gate(problems, o.force); err != nil {
 		return err
 	}
 
@@ -179,10 +189,18 @@ func run(args []string) error {
 	// each repo is torn down, so len(st.Repos) is zero (or the not-torn-down
 	// remainder) by the time the final report prints.
 	repoCount := len(st.Repos)
-	failures := teardown(o, l, st, workDir)
+	failures := teardown(o, cfg, l, st, workDir)
 	if len(failures) > 0 {
 		return fmt.Errorf("teardown finished with %d failure(s) (work folder kept: %s):\n  %s",
 			len(failures), workDir, strings.Join(failures, "\n  "))
+	}
+
+	// --force means discard subagent and integrate worktrees even when the
+	// folder itself is kept for its extra files.
+	if o.force {
+		if err := os.RemoveAll(l.WorktreesDir(workDir)); err != nil {
+			return err
+		}
 	}
 
 	// Keep: leave the folder with the extra files and the now-honest
@@ -216,20 +234,41 @@ func containsPathSeparator(s string) bool {
 }
 
 // tdOptions maps done's flags onto the shared teardown package's Options.
-func tdOptions(o *options) teardownpkg.Options {
+func tdOptions(o *options, cfg *config.Config, l layout.Layout, st *state.State, workDir string) teardownpkg.Options {
 	return teardownpkg.Options{
 		DeleteLocal:  o.deleteLocal,
 		DeleteRemote: o.deleteRemote,
 		Force:        o.force,
 		NoFetch:      o.noFetch,
+		Mode:         st.Mode.OrDefault(),
+		RepoDir: func(name string) (string, error) {
+			return workfolder.RepoDirFor(l, st, workDir, name)
+		},
+		RemoteURL: func(name string) (string, error) {
+			return workfolder.RepoURL(cfg, l, name)
+		},
 	}
+}
+
+// leftoverProblems reports worktrees left under .worktrees. done does not
+// inspect their branches or guess whether the work is merged; --force is the
+// explicit discard path.
+func leftoverProblems(workDir string) []string {
+	left, err := teardownpkg.Leftovers(workDir)
+	if err != nil {
+		return []string{fmt.Sprintf(".worktrees: %v", err)}
+	}
+	if len(left) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(".worktrees contains leftover worktree(s): %s (use --force to discard them)", strings.Join(left, ", "))}
 }
 
 // runChecks aggregates the shared per-repo safety checks across every repo in
 // the work folder. An error while running a check is a warning plus a counted
 // problem (conservative), never a mid-loop abort; --force overrides problems.
-func runChecks(o *options, l layout.Layout, st *state.State, workDir string) []string {
-	to := tdOptions(o)
+func runChecks(o *options, cfg *config.Config, l layout.Layout, st *state.State, workDir string) []string {
+	to := tdOptions(o, cfg, l, st, workDir)
 	var problems []string
 	for _, r := range st.Repos {
 		problems = append(problems, teardownpkg.CheckRepo(to, l, r, workDir)...)
@@ -240,8 +279,8 @@ func runChecks(o *options, l layout.Layout, st *state.State, workDir string) []s
 // teardown tears down every repo via the shared per-repo teardown, aggregating
 // failures for an end-of-run report. TeardownRepo drops each fully-torn-down
 // repo from st (persisting honest state), so iterate a snapshot of st.Repos.
-func teardown(o *options, l layout.Layout, st *state.State, workDir string) []string {
-	to := tdOptions(o)
+func teardown(o *options, cfg *config.Config, l layout.Layout, st *state.State, workDir string) []string {
+	to := tdOptions(o, cfg, l, st, workDir)
 	var failures []string
 	for _, r := range append([]state.Repo(nil), st.Repos...) {
 		failures = append(failures, teardownpkg.TeardownRepo(to, l, st, r, workDir)...)
@@ -307,6 +346,11 @@ func extraFiles(workDir string, st *state.State) ([]string, error) {
 		}
 		// A repo's worktree dir sits at the root; skip it whole.
 		if d.IsDir() && !strings.ContainsRune(rel, filepath.Separator) && worktrees[rel] {
+			return fs.SkipDir
+		}
+		// .worktrees is git-work's reserved space, never a user file. Leftover
+		// worktrees are handled by the teardown gate, not the extra-file walk.
+		if d.IsDir() && rel == layout.WorktreesDirName {
 			return fs.SkipDir
 		}
 		if d.IsDir() {

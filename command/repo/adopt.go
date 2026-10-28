@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -29,10 +30,22 @@ var AdoptCmd = &cli.Command{
 		"git work repo adopt ~/dev/api",
 		"git work repo adopt api",
 	},
+	Flags: []cli.Flag{
+		{Long: "no-register", Desc: "do not record the repo's URL in the config registry"},
+	},
+}
+
+// adoptFlagSet registers adopt's git-work flags for the help conformance
+// test; the positional <dir> is validated by arity, not flag.Parse.
+func adoptFlagSet(o *bool) *flag.FlagSet {
+	fs := cli.NewFlagSet("adopt")
+	fs.BoolVar(o, "no-register", false, "do not record the repo's URL in the config registry")
+	return fs
 }
 
 // runAdopt executes `git work repo adopt <dir>`.
 func runAdopt(args []string) error {
+	args, noRegister := stripNoRegister(args)
 	if len(args) != 1 {
 		return cli.Usagef("give exactly one <dir>")
 	}
@@ -53,7 +66,43 @@ func runAdopt(args []string) error {
 	if err != nil {
 		return err
 	}
-	return adopt(os.Stdout, l, src)
+	if err := adopt(os.Stdout, l, src); err != nil {
+		return err
+	}
+	if noRegister {
+		return nil
+	}
+	name := adoptedRepoName(l, src)
+	if cfg.RepoURL(name) != "" {
+		return nil
+	}
+	main, err := l.RepoMain(name)
+	if err != nil {
+		return nil
+	}
+	url, err := gitrepo.RemoteURL(main)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "git-work: %s: not registered: %v\n", name, err)
+		return nil
+	}
+	cfg.SetRepoURL(name, url)
+	if err := cfg.SaveTo(config.DefaultPath()); err != nil {
+		return fmt.Errorf("adopted %s but recording its URL in the config failed: %w", name, err)
+	}
+	return nil
+}
+
+// adoptedRepoName returns the managed repo name after adopt succeeds: the
+// first component under the repos root for a managed/normalized path, or the
+// directory base for a clone adopted from elsewhere.
+func adoptedRepoName(l layout.Layout, src string) string {
+	src = filepath.Clean(src)
+	root := filepath.Clean(l.ReposRoot)
+	if rel, err := filepath.Rel(root, src); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		parts := strings.Split(rel, string(os.PathSeparator))
+		return parts[0]
+	}
+	return filepath.Base(src)
 }
 
 // resolveSource turns the <dir> argument into an absolute existing directory.

@@ -76,14 +76,30 @@ func reuse(c Candidate) BranchChoice {
 //     pick - the remedy is --branch, or an interactive run.
 //   - Candidates, interactive: the user picks one, or "create new".
 func ResolveWorkBranch(mainDir, name, ticketID, branch string, opts ResolveOpts) (BranchChoice, error) {
-	exists, err := LocalBranchExists(mainDir, branch)
+	return resolveWorkBranch(primaryProbe{dir: mainDir}, name, ticketID, branch, opts)
+}
+
+// branchProbe is the subset of branch lookups the resolution rules need. A
+// primary clone answers locally and from its remote-tracking refs; a clone-mode
+// URL answers from git ls-remote and has no local branches.
+//
+// The rules live once so a remote probe cannot drift from the primary behavior.
+type branchProbe interface {
+	localBranchExists(branch string) (bool, error)
+	remoteBranchExists(branch string) (bool, error)
+	branchesMatching(ticketID string) ([]Candidate, error)
+}
+
+// resolveWorkBranch is ResolveWorkBranch against an arbitrary probe.
+func resolveWorkBranch(p branchProbe, name, ticketID, branch string, opts ResolveOpts) (BranchChoice, error) {
+	exists, err := p.localBranchExists(branch)
 	if err != nil {
 		return BranchChoice{}, err
 	}
 	if exists {
 		return BranchChoice{Mode: CheckoutLocal, Branch: branch, Source: "existing"}, nil
 	}
-	remote, err := RemoteBranchExists(mainDir, branch)
+	remote, err := p.remoteBranchExists(branch)
 	if err != nil {
 		return BranchChoice{}, err
 	}
@@ -94,7 +110,7 @@ func ResolveWorkBranch(mainDir, name, ticketID, branch string, opts ResolveOpts)
 	if opts.Explicit {
 		return create, nil
 	}
-	candidates, err := BranchesMatching(mainDir, ticketID)
+	candidates, err := p.branchesMatching(ticketID)
 	if err != nil {
 		return BranchChoice{}, err
 	}
@@ -127,9 +143,11 @@ func ResolveWorkBranch(mainDir, name, ticketID, branch string, opts ResolveOpts)
 
 // Planned is one repo's resolved work branch, ready to check out.
 type Planned struct {
-	Name   string
-	Main   string // the repo's primary clone
-	Choice BranchChoice
+	Name          string
+	Main          string // the repo's primary clone (worktree mode)
+	URL           string // the repo's clone URL (clone mode)
+	DefaultBranch string // recorded default branch (clone mode)
+	Choice        BranchChoice
 }
 
 // PlanOpts controls ResolveWorkBranches.
@@ -173,6 +191,52 @@ func ResolveWorkBranches(names []string, ticketID, branch string, opts PlanOpts)
 			continue
 		}
 		plan = append(plan, Planned{Name: name, Main: main, Choice: choice})
+	}
+	return plan, errors.Join(errs...)
+}
+
+// RemoteSource is one repo's clone URL and default branch, resolved before any
+// clone exists.
+type RemoteSource struct {
+	URL           string
+	DefaultBranch string
+}
+
+// RemotePlanOpts controls ResolveRemoteWorkBranches.
+type RemotePlanOpts struct {
+	ResolveOpts
+	SourceOf func(name string) (RemoteSource, error)
+	Warn     func(msg string)
+}
+
+// ResolveRemoteWorkBranches is the clone-mode counterpart of
+// ResolveWorkBranches. Every repo's URL, default branch and branch candidates
+// are resolved from the remote before anything is cloned, so a refusal creates
+// nothing. Remote failures are collected and joined, matching the primary
+// path's all-repos-at-once behavior.
+func ResolveRemoteWorkBranches(names []string, ticketID, branch string, opts RemotePlanOpts) ([]Planned, error) {
+	var plan []Planned
+	var errs []error
+	for _, name := range names {
+		src, err := opts.SourceOf(name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+		if src.DefaultBranch == "" {
+			errs = append(errs, fmt.Errorf("%s: could not determine the default branch from %s", name, src.URL))
+			continue
+		}
+		choice, err := resolveWorkBranch(remoteProbe{url: src.URL}, name, ticketID, branch, opts.ResolveOpts)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if choice.Branch == src.DefaultBranch {
+			errs = append(errs, fmt.Errorf("%s: %s is the repo's default branch and cannot be a work branch; create one first (`git -C <clone> switch -c <name>`), or let `git work add` create it", name, choice.Branch))
+			continue
+		}
+		plan = append(plan, Planned{Name: name, URL: src.URL, DefaultBranch: src.DefaultBranch, Choice: choice})
 	}
 	return plan, errors.Join(errs...)
 }

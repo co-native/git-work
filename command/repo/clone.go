@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"flag"
 	"fmt"
 	"strings"
 
@@ -29,6 +30,36 @@ var CloneCmd = &cli.Command{
 		"git work clone git@github.com:org/api.git",
 		"git work clone --depth 1 -- git@github.com:org/api.git api",
 	},
+	Flags: []cli.Flag{
+		{Long: "no-register", Desc: "do not record the repo's URL in the config registry"},
+	},
+}
+
+// cloneFlagSet registers git-work's own clone flags. git-clone's options are
+// not FlagSet flags: they pass through verbatim before a `--` separator, which
+// is why parseCloneArgs is a scanner rather than flag.Parse. The set exists so
+// the help conformance test can compare the descriptor with real registrations.
+func cloneFlagSet(o *bool) *flag.FlagSet {
+	fs := cli.NewFlagSet("clone")
+	fs.BoolVar(o, "no-register", false, "do not record the repo's URL in the config registry")
+	return fs
+}
+
+// stripNoRegister removes git-work's --no-register from the args before they
+// reach parseCloneArgs. Scanning stops at `--`: everything after it belongs to
+// git clone and is passed through untouched.
+func stripNoRegister(args []string) (rest []string, noRegister bool) {
+	for i, a := range args {
+		if a == "--" {
+			return append(append([]string{}, rest...), args[i:]...), noRegister
+		}
+		if a == "--no-register" {
+			noRegister = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return rest, noRegister
 }
 
 // parseCloneArgs splits args into git-clone options (everything before a "--"
@@ -104,6 +135,7 @@ func deriveDir(url string) string {
 // runClone executes `git work repo clone` (also reachable through the
 // top-level `git work clone` alias).
 func runClone(args []string) error {
+	args, noRegister := stripNoRegister(args)
 	opts, repoURL, dir, err := parseCloneArgs(args)
 	if err != nil {
 		return err
@@ -122,6 +154,12 @@ func runClone(args []string) error {
 	target := l.RepoDir(dir)
 	if err := gitrepo.Clone(repoURL, target, opts); err != nil {
 		return err
+	}
+	if !noRegister {
+		cfg.SetRepoURL(dir, repoURL)
+		if err := cfg.SaveTo(config.DefaultPath()); err != nil {
+			return fmt.Errorf("clone succeeded but recording %s in the config failed: %w", dir, err)
+		}
 	}
 	fmt.Printf("Cloned %s -> %s\n", repoURL, target)
 	return nil

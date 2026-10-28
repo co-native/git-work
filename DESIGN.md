@@ -1,9 +1,10 @@
 # git-work - Design
 
-`git-work` manages work that spans one or more repositories using git worktrees. It keeps
-a single primary clone per repo under a _repos root_, and lays out per-ticket _work
-folders_ (each a sibling collection of worktrees) under a _work root_. It installs as
-`git-work` on `PATH` so git dispatches it as `git work <command>`.
+`git-work` manages work that spans one or more repositories. A per-ticket _work folder_
+under a _work root_ holds one checkout per repo, in one of two modes: _worktree mode_
+keeps a primary clone per repo under a _repos root_ and links a worktree from it, while
+_clone mode_ puts a self-contained full clone in the work folder and needs no primary
+tree. It installs as `git-work` on `PATH` so git dispatches it as `git work <command>`.
 
 - Module: `github.com/co-native/git-work`
 - Binary: `git-work` → invoked as `git work <command>`
@@ -16,18 +17,122 @@ folders_ (each a sibling collection of worktrees) under a _work root_. It instal
 Each command package owns its own flag parsing. Shared building blocks live under
 `internal/`:
 
-| Package      | Responsibility                                                                                                                                                                                                                                                                                                   |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; dot-path key access (in `command/config`).                                                                                                                                                                                                   |
-| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                            |
-| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                       |
-| `workfolder` | The preamble of every command run inside a work folder (`Load`: state found from the cwd, config, resolved layout) and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                                  |
-| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`). The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                                     |
-| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`) and the shared worktree/state branch check (`WorktreeBranchProblem`).                                  |
-| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                         |
-| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the embedded work folder contract (`workfolder.md`) and the operator/per-repo overlays inlined into the instructions file; `WriteWorkFolder` is the one place the set of generated files is assembled. |
-| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                        |
-| `teardown`   | Per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                          |
+| Package      | Responsibility                                                                                                                                                                                                                                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; the repo URL registry; dot-path key access (in `command/config`).                                                                                                                                                                                                                  |
+| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): checkout mode, per-repo default branches, read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                        |
+| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                                                             |
+| `workfolder` | The preamble of every command run inside a work folder (`Load`: state from the cwd, config, resolved layout), the mode-aware `RepoDir`, the `.worktrees` cwd guard, and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                       |
+| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`), the checkout mode type, and the reserved `.worktrees` paths. The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                              |
+| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, remote branch probing, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`), the integrate temp-worktree marker, LFS setup, and the shared worktree/state branch check (`WorktreeBranchProblem`). |
+| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                                                               |
+| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the mode-aware embedded work folder contract, the operator overlay, and the repos-root/config-dir per-repo overlays; `WriteWorkFolder` is the one place the set of generated files is assembled.                                             |
+| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                                                              |
+| `teardown`   | Mode-aware per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), the `.worktrees` leftover scan, shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                     |
+
+## Checkout modes
+
+A work folder is either **worktree mode** or **clone mode**. The mode is chosen at `new`,
+recorded in state, and never mixed within one folder. Worktree mode is the original layout
+and remains the default. Clone mode is opt-in with `--mode clone`, or by setting
+`defaults.mode: clone` in config.
+
+### Worktree mode
+
+Each repo gets a linked worktree under the work folder, backed by a primary clone under
+the repos root (`<repos-root>/<repo>/<default-branch>`). Day-to-day commands freshen the
+primary and act on the worktree.
+
+### Clone mode
+
+Each repo gets a full clone at `<work>/<repo>`, checked out on its work branch. The folder
+is self-contained and relocatable: state stores repo names and branches, not paths, and a
+full clone has no absolute worktree path. This is what lets a container mount just the
+work folder. There is no primary clone involved.
+
+`new --mode clone` resolves each repo's clone URL, default branch and ticket-matching
+branch candidates from the remote before cloning anything. `repo.clone` is an ordinary
+full clone; the local default branch is left in place for `integrate`, `rebase` and
+`push --main`, and the work branch is then checked out from it. The default branch is
+recorded as `repos[].default_branch` so a later remote change cannot retarget in-flight
+work. A remote that does not advertise a symbolic HEAD is an error unless
+`repos.<name>.default_branch` supplies the answer.
+
+`add` inherits the folder's mode. Clone-mode `add` resolves the added repos the same way
+and rolls back only the clones it created. `new`/`add` failures are all-or-nothing.
+
+`refresh`, `rebase`, `push` and `push --main` keep their worktree-mode meaning with the
+clone as the repo directory:
+
+- `refresh` fetches and fast-forwards the clone's local default ref without touching the
+  work branch.
+- `rebase` freshens the local default and rebases the work branch onto it.
+- `push` pushes the work branch from the clone.
+- `push --main` pushes the clone's local default ref.
+
+`repo clone`, `repo adopt`, `repo pull` and `repo list` remain about the primary tree.
+`repo list` is one table covering both config entries and local primaries.
+
+### Config repo registry
+
+`repos.<name>.url` describes a repo without a primary clone. `repo clone` writes or
+refreshes it; `repo adopt` registers it only when absent, preserving an explicit value.
+`new`/`add` in clone mode resolve a URL from config first and an existing primary's
+`origin` second, and error naming both remedies when neither exists.
+
+### Integrate in clone mode
+
+`integrate` needs a second working tree for the default branch. It creates a transient
+linked worktree at `<work>/.worktrees/integrate-<repo>`, fast-forwards or cherry-picks
+there, removes it, then optionally pushes. A conflict leaves the worktree in place with
+the pick in progress, printing its path and continue/abort commands. A later run resumes:
+a clean leftover is removed; a marker recording the pre-transfer base and a moved HEAD
+distinguish a completed resolution from an aborted pick. A completed resolution reports up
+to date but still pushes when `--push` is set. A temp worktree makes the folder
+temporarily non-relocatable; resolve or abort it before moving the folder.
+
+### Teardown in clone mode
+
+`done` and `rm` remove the clone directory, which is the only local copy of the branch.
+`--delete-local` is accepted but is implicit: local deletion happens with the clone.
+`--delete-remote` keeps its meaning and is optional, so a coworker can discard local
+clones while leaving remote branches for the rest of the team. Remote deletion happens
+before the clone is removed; a failure keeps the clone and state for a retry. If the clone
+is already gone, a throwaway bare repo pushes the remote deletion from the configured URL.
+
+### `.worktrees` and subagent worktrees
+
+`<work>/.worktrees/` is reserved. It holds git-work's `integrate-<repo>` checkouts and, by
+convention, subagent worktrees at `agent-<agent>/<repo>`. Subagent worktrees are ordinary
+linked worktrees of the clone, so commits are visible to the main agent immediately.
+Subagents use plain git inside them; every folder-scoped git-work command refuses when run
+from inside `.worktrees`, because it would otherwise act on the main checkout.
+
+`done` without `--force` reports leftover `integrate-*` and `agent-*` entries and aborts;
+`--force` deletes everything under `.worktrees`, after repo teardown and before the
+leftover Keep decision. `rm --force` removes only the target repo's entries and prunes an
+empty agent directory. A folder is relocatable only while `.worktrees` holds no worktrees.
+
+### Git LFS
+
+A normal clone fetches LFS objects for the checked-out branch into
+`<repo>/.git/lfs/objects`; it does not fetch every ref. When a repo uses LFS and `git-lfs`
+is installed, `new`/`add` run `git lfs install --local` and `git lfs checkout` so the
+working tree is materialized. `--lfs-fetch-all` additionally runs `git lfs fetch --all`,
+making the folder self-contained for every ref; it is opt-in because of bandwidth and disk
+cost. A missing `git-lfs` is a warning, not a failure, but the container image needs the
+binary for checkouts and subagent worktrees. Keep `lfs.storage` at its in-repo default;
+each work folder clone has its own LFS store, and subagent worktrees share it.
+
+### Containers and credentials
+
+Clone mode is designed for a work folder created on the host and mounted read-write into a
+container, at any path while `.worktrees` holds no worktrees. The agent can commit in
+every clone. Without credentials in the container it cannot push, which is the intended
+security boundary; `push`, `push --main`, `done --delete-remote` and `rebase` stay
+host-side operations. `push`, `push --main`, `rebase`, `refresh`, `done`, `rm` and `git`
+need no config file in clone mode when `done` is given a path. `safe.directory` and commit
+identity remain operator concerns.
 
 ## Command reference
 
@@ -37,14 +142,14 @@ git work <command> [args]
 commands:
   repo <subcommand>                 manage primary repos (clone, adopt, list, pull); "repos" also works
   clone [opts] [--] <repo> [<dir>]  clone a repo into the primary repos root
-  new <ticket-id|name>              start a new work folder with worktrees
+  new <ticket-id|name>              start a new work folder with worktrees or clones
   add                               add another repo to the current work folder
-  adopt <dir>                       register an existing worktree dir in the current work folder
-  refresh                           pull the ticket repos' primaries, re-render generated files
-  rebase <repo> | --all             pull the repos' primaries, rebase work branches onto their defaults
+  adopt <dir>                       register an existing checkout dir in the current work folder
+  refresh                           freshen the ticket repos' defaults, re-render generated files
+  rebase <repo> | --all             freshen the defaults, rebase work branches onto them
   push <repo> | --all               push work branches with unpushed commits to origin
   integrate <repo> | --all          move a work branch's un-integrated commits onto its default branch
-  git <repo> | --all -- <args>      run a git command in each repo's worktree
+  git <repo> | --all -- <args>      run a git command in each repo's checkout
   done <dir>                        tear down a work folder
   rm <repo>                         remove one repo from the current work folder
   config <subcommand>               view/edit the global configuration
@@ -96,7 +201,8 @@ layout drift.
 #### `repo clone [opts] [--] <repo> [<dir>]`
 
 Clones `<repo>` into the repos root as the primary clone; the primary folder is named
-after the upstream default branch (detected from `origin/HEAD`). Top-level
+after the upstream default branch (detected from `origin/HEAD`). On success the repo's URL
+is written to `repos.<name>.url` in config unless `--no-register` is passed. Top-level
 `git work clone` is a thin alias, and `git work repos` is accepted for `repo` everywhere.
 `<dir>` overrides the repo directory name (derived from the URL otherwise); a `<dir>` that
 itself looks like a repo URL is rejected - clone takes exactly one repo, run it once per
@@ -111,12 +217,14 @@ git work clone --depth 1 -- git@github.com:org/api.git api
 #### `repo adopt <dir>`
 
 Adopts an existing plain clone into the managed layout
-(`<repos-root>/<repo>/<default-branch>`): checks out the default branch (a primary must
-sit on it - pulls and rebases target it), moves the clone, writes the parent `.git`
-pointer file, sets `core.worktree ..`, and repairs existing worktrees' `.git`
-back-pointers (`git worktree repair`). `<dir>` is a path, or a bare name looked up under
-the repos root and under the repos root's parent (where plain clones live, e.g.
-`~/dev/<dir>`); a name present in both places is ambiguous and needs a path.
+(`<repos-root>/<repo>/<default-branch>`), and registers its origin URL only when
+`repos.<name>.url` is absent (an explicit config value is preserved) unless
+`--no-register` is passed: checks out the default branch (a primary must sit on it - pulls
+and rebases target it), moves the clone, writes the parent `.git` pointer file, sets
+`core.worktree ..`, and repairs existing worktrees' `.git` back-pointers
+(`git worktree repair`). `<dir>` is a path, or a bare name looked up under the repos root
+and under the repos root's parent (where plain clones live, e.g. `~/dev/<dir>`); a name
+present in both places is ambiguous and needs a path.
 
 Re-running against an already-managed repo normalizes drift instead: renames the primary
 folder to match the default branch, rewrites the pointer file, sets `core.worktree`,
@@ -127,9 +235,10 @@ out of scope).
 
 #### `repo list`
 
-Lists every managed repo under the repos root: default branch, linked worktrees (path and
-branch), and layout drift findings (missing/malformed pointer file, primary folder not
-named after the default branch, primary checked out on a non-default branch,
+Lists every configured repo and every managed primary in one table: default branch,
+configured clone URL, worktree count, and status (config-only, no config URL,
+config/origin mismatch, drift). Drift findings (missing/malformed pointer file, primary
+folder not named after the default branch, primary checked out on a non-default branch,
 `core.worktree` not `..`). Drift is reported, never fixed - run `repo adopt` to normalize.
 
 #### `repo pull`
@@ -144,11 +253,12 @@ make the command exit nonzero after the loop.
 ### `new <ticket-id|name> [flags]`
 
 Starts a work folder: resolves repos, optionally fetches ticket details from a provider,
-creates the folder under the work root, adds a worktree (and branch) per repo, and writes
-the generated files. Rolls back (removes added worktrees and the folder) on any failure
-after the folder is created. A failed per-repo `git fetch` (e.g. a local-only repo with no
-usable remote, or being offline) is a warning, not an error - branch resolution continues
-with the local refs. `add` behaves the same way.
+creates the folder under the work root, adds a checkout (and branch) per repo - a linked
+worktree in worktree mode, a full clone in clone mode - and writes the generated files.
+Rolls back (removes added worktrees and the folder) on any failure after the folder is
+created. A failed per-repo `git fetch` (e.g. a local-only repo with no usable remote, or
+being offline) is a warning, not an error - branch resolution continues with the local
+refs. `add` behaves the same way.
 
 **Ticketless mode** (`--no-ticket`/`-n`): the positional argument is a plain name instead
 of a ticket id - no provider lookup, no `TICKET.md`; the folder and branch are named from
@@ -176,7 +286,7 @@ folder is created, so a refusal reports all repos in one run and creates nothing
 ### `add [flags]`
 
 Run from inside a work folder (located via `FindUp`). Adds one or more repos - new
-worktrees + branches - to the current ticket and re-aggregates the generated `README.md`
+checkouts + branches - to the current ticket and re-aggregates the generated `README.md`
 and instructions file. The folder's work branch is the default for each added repo and
 `--branch` overrides it for the repos being added (recorded per repo in `repos[].branch`);
 existing branches are handled by [Branch resolution](#branch-resolution), resolved for
@@ -184,15 +294,17 @@ every repo before the first worktree is added.
 
 ### `adopt <dir>`
 
-Run from inside a work folder with an explicit directory argument. The target must be a
-direct subdirectory of the work folder the command runs in (the folder `FindUp` locates
-from the cwd, or the cwd itself when nothing is managed yet) - adopting into some other
-folder's state file is refused. Registers that one existing worktree subdirectory in the
-folder's `.git-work.yaml`, creating the state file first when the folder is entirely
-unmanaged (ticket id and slug inferred from the folder name - multi-segment prefixes like
-`dev-tools-12-fix` work; a name with no ticket-shaped prefix bootstraps a ticketless
-state, mirroring `new --no-ticket`, so refresh writes no TICKET.md. The first adopted
-worktree's branch becomes the work branch). Nothing moves and nothing is rewritten in git.
+Run from inside a work folder with an explicit directory argument. In clone mode the
+target is a full clone; in worktree mode it is a linked worktree of a managed primary. The
+target must be a direct subdirectory of the work folder the command runs in (the folder
+`FindUp` locates from the cwd, or the cwd itself when nothing is managed yet) - adopting
+into some other folder's state file is refused. Registers that one existing worktree
+subdirectory in the folder's `.git-work.yaml`, creating the state file first when the
+folder is entirely unmanaged (ticket id and slug inferred from the folder name -
+multi-segment prefixes like `dev-tools-12-fix` work; a name with no ticket-shaped prefix
+bootstraps a ticketless state, mirroring `new --no-ticket`, so refresh writes no
+TICKET.md. The first adopted worktree's branch becomes the work branch). Nothing moves and
+nothing is rewritten in git.
 
 Re-adopting an already-registered repo whose branch still matches is a no-op with a
 message. When the branch no longer matches, re-adopting **re-records it** - this is the
@@ -211,13 +323,14 @@ worktree whose primary has layout drift (`repo adopt` first).
 
 ### `refresh [flags]`
 
-Run from inside a work folder. First ff-only-pulls each ticket repo's default branch in
-its primary clone (explicitly, so a primary left on another branch still freshens the
-default branch; a failed pull, e.g. a diverged branch, being offline, or layout problems,
-is a warning, never an abort), then re-renders the managed blocks of `TICKET.md`,
-`README.md`, and the instructions file from current state - re-fetching provider details
-for the title/description (keeps the existing title if the fetch fails). Ticketless work
-folders skip the provider fetch and `TICKET.md`.
+Run from inside a work folder. In worktree mode it ff-only-pulls each ticket repo's
+default branch in its primary clone; in clone mode it fetches and fast-forwards the
+clone's local default ref. Then it re-renders (explicitly, so a primary left on another
+branch still freshens the default branch; a failed pull, e.g. a diverged branch, being
+offline, or layout problems, is a warning, never an abort), then re-renders the managed
+blocks of `TICKET.md`, `README.md`, and the instructions file from current state -
+re-fetching provider details for the title/description (keeps the existing title if the
+fetch fails). Ticketless work folders skip the provider fetch and `TICKET.md`.
 
 ### `rebase <repo> | --all [flags]`
 
@@ -277,7 +390,7 @@ the predicate applies uniformly - naming a repo does not bypass it. An untouched
 an ancestor of origin's default, so it counts zero on both legs and `--all` cannot litter
 origin with placeholder branches.
 
-Each push runs `git push -u origin <branch>` from the repo's worktree
+Each push runs `git push -u origin <branch>` from the repo's checkout (worktree or clone)
 (`repo.PushBranchUpstream`), targeting the branch recorded in state - not whatever the
 worktree has checked out. `-u` is explicit so a first push establishes `@{upstream}`
 regardless of the operator's `push.autoSetupRemote` (`done`'s unpushed check and later
@@ -326,10 +439,12 @@ otherwise identical to the work-branch mode.
 ### `integrate <repo> | --all [flags]`
 
 Moves a work branch's un-integrated commits onto its repo's local default branch - by
-**fast-forward** where possible, cherry-pick otherwise - as an alternative to a lossy
-`git merge --squash` integrating. Scope is one repo (`<repo>`) or every repo in the work
-folder (`-a`/`--all`); a leading-dash `--all` parses fine (unlike `done`'s parser,
-`integrate` doesn't reject a leading `-` first argument).
+**fast-forward** where possible, cherry-pick otherwise. In clone mode the transfer runs in
+a transient `<work>/.worktrees/integrate-<repo>` linked worktree; a conflict leaves it in
+place and a later run resumes, see [Checkout modes](#checkout-modes). - as an alternative
+to a lossy `git merge --squash` integrating. Scope is one repo (`<repo>`) or every repo in
+the work folder (`-a`/`--all`); a leading-dash `--all` parses fine (unlike `done`'s
+parser, `integrate` doesn't reject a leading `-` first argument).
 
 **Pre-flight is fully atomic across the whole scope, before any cherry-pick.** Per repo:
 fetch (unless `--no-fetch`), verify the primary clone is clean and on its default branch,
@@ -408,9 +523,10 @@ does not squash. The documented workflow is `integrate` → push (or `integrate 
 
 ### `git <repo> | --all -- <git args>`
 
-Runs one git command in each in-scope repo's **worktree** - the multi-repo equivalent of
-`cd`-ing into each and running it by hand. Scope is one repo (`<repo>`) or every repo
-(`-a`/`--all`), the same rule as `push`, `integrate` and `rebase`.
+Runs one git command in each in-scope repo's **checkout** (worktree or clone) - the
+multi-repo equivalent of `cd`-ing into each and running it by hand. Scope is one repo
+(`<repo>`) or every repo (`-a`/`--all`), the same rule as `push`, `integrate` and
+`rebase`.
 
 Everything after the first `--` is passed to git **verbatim** and is never inspected, so
 aliases and flags behave exactly as they do in a single repo:
@@ -474,11 +590,18 @@ contained even when it arrived as a mix of squashed and individually-cherry-pick
 (a shape the per-commit-cherry and single-squash-probe checks alone can't see); a
 conflicting merge, an old git without `--write-tree`, or any other failure falls back to
 the earlier signals rather than surfacing an error. `--force` remains the path for
-genuinely unmerged teardown. Teardown is strictly worktree-then-branch per repo, and
-shared with `rm` via `internal/teardown` (`CheckRepo`/`TeardownRepo`); each repo that's
-fully torn down is dropped from `.git-work.yaml` and saved immediately, so state stays
-honest through a partial or blocked teardown - a re-run resumes exactly the repos still
-outstanding, and the final repo count is captured before teardown mutates state.
+genuinely unmerged teardown. In worktree mode teardown is worktree-then-branch per repo;
+in clone mode remote deletion happens before the clone is removed, because the clone is
+the only local repository that can run the push. Teardown is shared with `rm` via
+`internal/teardown` (`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is
+dropped from `.git-work.yaml` and saved immediately, so state stays honest through a
+partial or blocked teardown - a re-run resumes exactly the repos still outstanding, and
+the final repo count is captured before teardown mutates state.
+
+Leftover `integrate-*` and `agent-*` entries under `.worktrees` are a gate problem too:
+`done` reports them and aborts unless `--force`, which discards them after repo teardown
+and before the leftover Keep decision. `rm --force` removes only the target repo's entries
+and prunes an empty agent directory.
 
 The unpushed check treats a branch with no upstream as unpushed, so a branch that was
 squash-merged and never pushed would otherwise be blocked. Bypass condition: when BOTH
@@ -492,8 +615,8 @@ over the full merge-base..branch diff, so a branch carrying commits beyond the s
 merge is not contained and still reports both the unpushed and the unmerged problem.
 
 The work folder's "extra" files (anything at its root git-work didn't generate; repo
-worktree dirs are skipped whole, not walked into) are computed up front, before any
-teardown, and drive what happens to the folder at the end. No extra files, or
+checkout dirs and `.worktrees/` are skipped whole, not walked into) are computed up front,
+before any teardown, and drive what happens to the folder at the end. No extra files, or
 `--remove-all`, removes the whole folder including any leftovers. Otherwise,
 interactively, after the delete-local/delete-remote prompts `done` lists the extra files
 and offers a 3-way `tui.Select`: **Delete** (proceed as `--remove-all` would), **Keep**
@@ -509,7 +632,7 @@ Removes one repo from the current work folder - `done` narrowed to a single repo
 inside a work folder (located via `state.FindUp`); `<repo>` must already be in
 `.git-work.yaml` or the command errors. Runs the same `teardown.CheckRepo` safety checks
 and `teardown.TeardownRepo` teardown as `done` (uncommitted/unpushed/merged-or-contained,
-`--force` to override, worktree-then-branch order), scoped to just that repo, then
+`--force` to override, checkout-then-branch order), scoped to just that repo, then
 re-aggregates the `README.md` and instructions file managed blocks from the repos that
 remain. The rest of the work folder - other repos, `TICKET.md`, the state file itself - is
 left untouched; `rm` never removes the folder. Removing the last repo leaves an accurate
@@ -544,13 +667,14 @@ the unpushed check passes. A worktree sitting on it agrees with state, so
 report zero problems and proceed to delete `main` locally and on origin - and every check
 that should have caught it was, correctly, saying yes.
 
-`repo.IsDefaultBranch` reads `origin/HEAD`, deliberately rather than
-`repo.DefaultBranchName`: the latter falls back to the primary's checked-out branch, which
-is the wrong answer in precisely the drifted layout where a worktree can hold the default
-branch at all. A repo with no `origin/HEAD` (local-only, or a remote that never set it)
-has no upstream default to read, so the primary's own branch stands in - a primary sits on
-its default by design. That keeps "cannot tell" from becoming "cannot delete anything" for
-repos with no remote.
+`repo.IsDefaultBranchFor` checks the recorded `repos[].default_branch` first, then
+`origin/HEAD`, and only falls back to the local HEAD for legacy worktree state with no
+recorded value. It deliberately avoids `repo.DefaultBranchName`'s checked-out-branch
+fallback in clone mode, where that branch is the work branch. `repo.IsDefaultBranch`
+remains the origin/HEAD-first check for primary-layout commands. A repo with no
+`origin/HEAD` (local-only, or a remote that never set it) has no upstream default to read,
+so the primary's own branch stands in - a primary sits on its default by design. That
+keeps "cannot tell" from becoming "cannot delete anything" for repos with no remote.
 
 The two halves are asymmetric on purpose. **Recording** is not destructive, so a repo
 whose default branch cannot be determined produces a warning and proceeds. **Deleting**
@@ -608,11 +732,14 @@ instructions_file: AGENTS.md # AGENTS.md | CLAUDE.md (default AGENTS.md)
 
 defaults: # optional; house rules every repo inherits
   integration: pr # local | pr (default local)
+  mode: clone # worktree | clone (default worktree)
 
 repos: # optional; per-repo overrides, keyed by name
   api:
     integration: local # overrides the house rule in either direction
     add_by_default: true # pre-selected in `git work new`'s picker
+    url: git@github.com:acme/api.git # clone-mode source; auto-registered by repo clone/adopt
+    default_branch: main # remote-HEAD override, only for a remote that cannot advertise one
 
 ticket_providers: # optional; first matching pattern wins
   - name: jira
@@ -632,9 +759,12 @@ ticket_providers: # optional; first matching pattern wins
 | `paths.work`           | Root holding per-ticket work folders. Default `~/dev/work`.                                                                                                                            |
 | `instructions_file`    | Name of the generated instructions file at a work folder's root, and of the overlays inlined into it: `AGENTS.md` (default) or `CLAUDE.md`. See [Generated files](#generated-files).   |
 | `defaults.integration` | House integration route, inherited by every repo that does not set its own: `local` or `pr`. Unset means `local`.                                                                      |
+| `defaults.mode`        | House checkout mode: `worktree` (default) or `clone`. `new --mode` overrides it.                                                                                                       |
 | `repos.<name>`         | Per-repo overrides, keyed by repo name. Absent entries are equivalent to empty ones.                                                                                                   |
 | `…integration`         | This repo's integration route: `local` (git-work moves the commits) or `pr` (a pull request does, so `integrate` refuses). Empty inherits `defaults.integration`.                      |
 | `…add_by_default`      | `true` pre-selects this repo in `git work new`'s repo picker.                                                                                                                          |
+| `…url`                 | Clone URL used by clone-mode `new`/`add` when no primary exists. `repo clone` writes/refreshes it; `repo adopt` registers only if absent.                                              |
+| `…default_branch`      | Optional default-branch override for a remote that does not advertise a symbolic HEAD.                                                                                                 |
 | `ticket_providers[]`   | Ordered list of providers for fetching ticket details.                                                                                                                                 |
 | `…name`                | Provider name (recorded in state as the resolved provider).                                                                                                                            |
 | `…type`                | Built-in provider type: `jira` or `github`.                                                                                                                                            |
@@ -683,9 +813,12 @@ A fetch failure is a warning - `new`/`refresh` continue without the details.
 | `paths.work`                   | Scalar. `unset` resets to the default.                                                                                                                                  |
 | `instructions_file`            | Scalar (`AGENTS.md` or `CLAUDE.md`). `unset` resets to `AGENTS.md`.                                                                                                     |
 | `defaults.integration`         | Scalar (`local` or `pr`). `unset` clears it back to the built-in `local`.                                                                                               |
+| `defaults.mode`                | Scalar (`worktree` or `clone`). `unset` clears it back to `worktree`.                                                                                                   |
 | `repos.<name>`                 | `get` prints the entry as YAML; `unset` drops it.                                                                                                                       |
 | `repos.<name>.integration`     | Scalar (`local` or `pr`). Auto-creates the entry if absent; `unset` clears it back to inheriting `defaults.integration`.                                                |
 | `repos.<name>.add_by_default`  | `true`/`false`. Auto-creates the entry if absent.                                                                                                                       |
+| `repos.<name>.url`             | Scalar clone URL. Auto-creates the entry if absent.                                                                                                                     |
+| `repos.<name>.default_branch`  | Scalar default-branch override. Auto-creates the entry if absent.                                                                                                       |
 | `providers.<name>`             | `get` prints the provider as YAML; `unset` drops it.                                                                                                                    |
 | `providers.<name>.type`        | Scalar (`jira` or `github`). Auto-creates the provider if absent.                                                                                                       |
 | `providers.<name>.default`     | `true`/`false`; setting `true` clears other defaults.                                                                                                                   |
@@ -737,6 +870,26 @@ Work folders hold one worktree per repo plus generated files:
 Worktrees are added with absolute paths. `ListRepos` enumerates the directories directly
 under the repos root as the candidate repo set.
 
+Clone-mode work folders have no primary tree. Each repo is a full clone, and the reserved
+`.worktrees/` directory holds transient and subagent linked worktrees:
+
+```
+~/dev/work/<ticket>-<slug>/
+├── .git-work.yaml
+├── TICKET.md
+├── README.md
+├── AGENTS.md
+├── .worktrees/               # reserved
+│   ├── integrate-<repo>/     # transient, git-work-owned
+│   └── agent-<agent>/        # subagent worktrees
+│       └── <repo>/
+├── <repoA>/                  # full clone on the work branch
+└── <repoB>/
+```
+
+The folder stores no absolute paths of its own, so it is relocatable while `.worktrees`
+holds no linked worktree.
+
 ## State file
 
 Each work folder carries `.git-work.yaml` (or `.git-work.json`); `FindUp` walks up from
@@ -750,11 +903,13 @@ branch: PROJ-123-make-the-thing-faster # default work branch
 provider: jira # resolved provider name, if any
 no_ticket: true # ticketless folder (new --no-ticket): ticket_id is
 # empty and title carries the plain name; omitted otherwise
+mode: clone # omitted means worktree
 created_at: 2026-06-21T00:00:00Z
 repos:
   - name: api
     branch_source: new # "new" | "existing"
     branch: PROJ-123-make-the-thing-faster
+    default_branch: main # clone mode; worktree mode may omit it
   - name: web
     branch_source: existing
     branch: feature/PROJ-123
@@ -763,7 +918,10 @@ repos:
 `repos[].branch` records the branch actually checked out per repo (which may differ from
 the top-level `branch` when an existing branch was reused). State files written before
 that field existed fall back to the top-level `branch` on load - a best guess that
-`done`'s existence and merged checks gate before any deletion.
+`done`'s existence and merged checks gate before any deletion. State files written before
+`mode` load as worktree; an unknown mode is an error. `repos[].default_branch` is the
+target clone-mode `integrate`/`rebase`/`push --main` use, so a later remote default change
+cannot silently retarget in-flight work.
 
 ## Generated files
 
@@ -796,30 +954,39 @@ specifics, with the identity header first:
 
 1. **Identity** - `# <ticket>: <title>` (or the title alone when ticketless) and the
    folder-level branch.
-2. **Work folder contract** - `internal/template/workfolder.md`, compiled into the binary
-   with `go:embed`. It describes what a work folder is, that `.scratch/` is flat at the
-   root, that the managed region must not be hand-edited, and that folders are created and
-   torn down with `git work` rather than by hand. It ships in the binary rather than being
-   installed beside it so there is nothing to keep in sync per machine and the text always
-   matches the tool that wrote it; `git work refresh` propagates an upgrade.
+2. **Work folder contract** - `internal/template/workfolder.md` for worktree mode or
+   `workfolder-clone.md` for clone mode, both compiled into the binary with `go:embed`.
+   They describe what a work folder is, that `.scratch/` is flat at the root, that the
+   managed region must not be hand-edited, and that folders are created and torn down with
+   `git work` rather than by hand. The clone text also covers full clones, `.worktrees/`,
+   the plain-git rule for subagents, and the `git-lfs` requirement. They ship in the
+   binary rather than being installed beside it so there is nothing to keep in sync per
+   machine and the text always matches the tool that wrote it; `git work refresh`
+   propagates an upgrade.
 3. **Operator overlay** - the optional `${XDG_CONFIG_HOME:-~/.config}/git-work/AGENTS.md`
    (in `config.OverlayDir()`), for guidance that applies to every work folder but is the
    operator's rather than the tool's. Missing or blank is silently skipped.
 4. **Per-repo sections** - one per included repo, each stating that repo's own branch and
-   inlining its optional `~/dev/repos/<repo>/AGENTS.md` overlay.
+   inlining its per-repo overlay.
 
-Each overlay is looked up under the configured name first and the other name second, so
-switching `instructions_file` does not require the overlays to be renamed. One overlay per
-location is inlined. A leading block HTML comment (an installer's "generated from" marker)
-is dropped: Claude Code documents that it strips block comments from `CLAUDE.md`, but not
-from `AGENTS.md`, and other agents make no such promise. The rest is inlined verbatim.
-Because the content is copied into each folder, editing an overlay takes effect in
-existing folders only after `git work refresh`.
+Per-repo overlays have two sources: `<repos-root>/<repo>/AGENTS.md` (or `CLAUDE.md`, the
+other name as fallback) and `<config-dir>/repo-instructions/<repo>.md`. The repos-root
+source follows `instructions_file`; the config-dir source is always `<repo>.md`, so
+switching the setting never renames it. Both existing is an error naming both paths, not a
+silent precedence choice. The operator overlay is looked up under the configured name
+first and the other name second, so switching `instructions_file` does not require the
+operator overlay to be renamed. One overlay per location is inlined. A leading block HTML
+comment (an installer's "generated from" marker) is dropped: Claude Code documents that it
+strips block comments from `CLAUDE.md`, but not from `AGENTS.md`, and other agents make no
+such promise. The rest is inlined verbatim. Because the content is copied into each
+folder, editing an overlay takes effect in existing folders only after `git work refresh`.
 
 ## Branch resolution
 
 When `new`/`add` includes a repo, `repo.ResolveWorkBranch` decides which branch its
-worktree gets. The rules, in order:
+checkout gets. Worktree mode reads local and remote-tracking refs from the primary; clone
+mode reads the same candidates from `git ls-remote` before cloning, so local-only branches
+are not candidates there. The rules, in order:
 
 1. A branch already carrying the intended name is always reused, whether it exists locally
    or only on origin (after the pre-resolution fetch). The remote case is checked out as a

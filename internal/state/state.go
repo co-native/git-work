@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/co-native/git-work/internal/fileio"
+	"github.com/co-native/git-work/internal/layout"
 )
 
 // FileName is the per-work state file (YAML by default).
@@ -27,6 +28,12 @@ type Repo struct {
 	// before this field existed omit it; Load falls back to the top-level
 	// State.Branch.
 	Branch string `yaml:"branch,omitempty" json:"branch,omitempty"`
+	// DefaultBranch is the repo's default branch recorded when the work folder
+	// was created. Clone mode has no primary whose HEAD can stand in for it, so
+	// commands use this value before falling back to origin/HEAD or a local
+	// HEAD. Worktree-mode state written before this field existed leaves it
+	// empty and keeps the old resolution.
+	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
 }
 
 // State is the per-work-folder metadata.
@@ -39,9 +46,12 @@ type State struct {
 	// NoTicket marks a ticketless work folder (created with `new --no-ticket`):
 	// there is no ticket id, no provider, and no TICKET.md; Title carries the
 	// plain name and Slug its folder/branch form.
-	NoTicket  bool      `yaml:"no_ticket,omitempty" json:"no_ticket,omitempty"`
-	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
-	Repos     []Repo    `yaml:"repos" json:"repos"`
+	NoTicket bool `yaml:"no_ticket,omitempty" json:"no_ticket,omitempty"`
+	// Mode records the work folder's checkout mode. Empty means worktree, so
+	// state files written before modes existed keep working unchanged.
+	Mode      layout.Mode `yaml:"mode,omitempty" json:"mode,omitempty"`
+	CreatedAt time.Time   `yaml:"created_at" json:"created_at"`
+	Repos     []Repo      `yaml:"repos" json:"repos"`
 }
 
 // DisplayName identifies the work folder in prompts and generated headings:
@@ -86,6 +96,14 @@ func readFile(path string) (*State, error) {
 	if err := fileio.Unmarshal(path, data, &s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	// Migration: state files written before Mode existed mean worktree. An
+	// unknown mode is a real parse error rather than a silent fallback, since
+	// guessing could act on the wrong layout.
+	mode, err := layout.ParseMode(string(s.Mode))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	s.Mode = mode
 	// Migration: state files written before Repo.Branch existed carry only
 	// the top-level branch; absent per-repo branches fall back to it. For
 	// repos that had reused a differently-named existing branch under the

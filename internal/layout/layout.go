@@ -14,10 +14,32 @@ type Layout struct {
 	WorkRoot  string
 }
 
+// WorktreesDirName is the reserved directory at a work folder's root holding
+// linked worktrees: git-work's transient integrate checkout and the subagent
+// worktrees that follow the documented convention.
+const WorktreesDirName = ".worktrees"
+
 func (l Layout) RepoDir(repo string) string { return filepath.Join(l.ReposRoot, repo) }
 func (l Layout) WorkDir(name string) string { return filepath.Join(l.WorkRoot, name) }
 func (l Layout) Worktree(work, repo string) string {
 	return filepath.Join(l.WorkRoot, work, repo)
+}
+
+// WorktreesDir returns <work>/.worktrees.
+func (l Layout) WorktreesDir(work string) string {
+	return filepath.Join(work, WorktreesDirName)
+}
+
+// IntegrateWorktree returns git-work's transient integrate checkout for a
+// repo: <work>/.worktrees/integrate-<repo>.
+func (l Layout) IntegrateWorktree(work, repo string) string {
+	return filepath.Join(work, WorktreesDirName, "integrate-"+repo)
+}
+
+// AgentWorktree returns a subagent worktree following the documented
+// convention: <work>/.worktrees/agent-<agent>/<repo>.
+func (l Layout) AgentWorktree(work, agent, repo string) string {
+	return filepath.Join(work, WorktreesDirName, "agent-"+agent, repo)
 }
 
 // RepoMain resolves the primary clone directory of repo (e.g.

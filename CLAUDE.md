@@ -53,6 +53,24 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
   worktree sitting on it - so this guard is the only thing standing between
   `done --delete-local --delete-remote` and deleting `main` locally and on origin.
 
+- **A work folder has one checkout mode, recorded in state.** `worktree` uses primary
+  clones and linked worktrees; `clone` uses full clones and no repos root. `new --mode`
+  selects it, config can default it, and `add`/`adopt` must match it. There are no mixed
+  folders.
+
+- **`.worktrees` is reserved and guarded.** `integrate-<repo>` is git-work's transient
+  checkout; `agent-<agent>/<repo>` is a subagent worktree convention. Folder-scoped
+  commands refuse when run from inside `.worktrees`, `extraFiles` skips it, and
+  `done`/`rm` report leftovers unless forced.
+
+- **Clone mode targets the recorded default branch.** `repos[].default_branch` wins over
+  `origin/HEAD`; the local checked-out-branch fallback is only for legacy worktree state.
+  A remote default moving later must not silently retarget in-flight work.
+
+- **Per-repo overlays have one source.** A repos-root overlay and a config-dir
+  `repo-instructions/<repo>.md` overlay for the same repo is an error, not a precedence
+  choice.
+
 - **Worktree and state must agree on the branch.** `repos[].branch` is written once and
   never re-synced, so it can drift. Commands split on which one they read, so every
   command acting on the recorded branch refuses while they disagree, via the one shared

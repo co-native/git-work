@@ -95,3 +95,44 @@ func TestListRepos(t *testing.T) {
 		t.Errorf("ListRepos = %v", repos)
 	}
 }
+
+func TestMode(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want Mode
+		ok   bool
+	}{
+		{"", ModeWorktree, true},
+		{"worktree", ModeWorktree, true},
+		{"clone", ModeClone, true},
+		{"bogus", "", false},
+	} {
+		got, err := ParseMode(tc.in)
+		if tc.ok {
+			if err != nil || got != tc.want {
+				t.Errorf("ParseMode(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("ParseMode(%q) = %q, want error", tc.in, got)
+		}
+	}
+	if Mode("").OrDefault() != ModeWorktree || ModeClone.OrDefault() != ModeClone {
+		t.Error("OrDefault should resolve only the empty mode")
+	}
+}
+
+func TestWorktreePaths(t *testing.T) {
+	work := filepath.Join("home", "u", "dev", "work", "T-1")
+	l := Layout{}
+	if got, want := l.WorktreesDir(work), filepath.Join(work, WorktreesDirName); got != want {
+		t.Errorf("WorktreesDir = %q, want %q", got, want)
+	}
+	if got, want := l.IntegrateWorktree(work, "api"), filepath.Join(work, WorktreesDirName, "integrate-api"); got != want {
+		t.Errorf("IntegrateWorktree = %q, want %q", got, want)
+	}
+	if got, want := l.AgentWorktree(work, "fix-auth", "api"), filepath.Join(work, WorktreesDirName, "agent-fix-auth", "api"); got != want {
+		t.Errorf("AgentWorktree = %q, want %q", got, want)
+	}
+}

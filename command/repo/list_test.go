@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
 	gitrepo "github.com/co-native/git-work/internal/repo"
 )
@@ -72,7 +73,7 @@ func TestInspectRepoConforming(t *testing.T) {
 	l := newLayout(t)
 	clonePrimary(t, l, makeOriginBranch(t, "main"), "alpha")
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if len(st.Drift) != 0 {
 		t.Errorf("conforming repo reported drift: %v", st.Drift)
 	}
@@ -96,7 +97,7 @@ func TestInspectRepoListsLinkedWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if len(st.Drift) != 0 {
 		t.Errorf("unexpected drift: %v", st.Drift)
 	}
@@ -118,7 +119,7 @@ func TestInspectRepoPrimaryNameDrift(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: ./main/.git\n"), 0o644)
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if st.PrimaryDir != "main" || st.DefaultBranch != "master" {
 		t.Errorf("PrimaryDir=%q DefaultBranch=%q, want main/master", st.PrimaryDir, st.DefaultBranch)
 	}
@@ -137,7 +138,7 @@ func TestInspectRepoMissingPointer(t *testing.T) {
 	os.MkdirAll(repoDir, 0o755)
 	run(t, "", "git", "clone", "-q", origin, filepath.Join(repoDir, "main"))
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if !driftContaining(st, "missing .git pointer") {
 		t.Errorf("expected missing-pointer drift, got %v", st.Drift)
 	}
@@ -161,7 +162,7 @@ func TestInspectRepoCheckedOutBranchDrift(t *testing.T) {
 	}
 	run(t, main, "git", "checkout", "-q", "-b", "hotfix")
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if !driftContaining(st, `primary has "hotfix" checked out, want the default branch "main"`) {
 		t.Errorf("expected checked-out-branch drift, got %v", st.Drift)
 	}
@@ -176,7 +177,7 @@ func TestInspectRepoMissingCoreWorktree(t *testing.T) {
 	}
 	run(t, main, "git", "config", "--unset", "core.worktree")
 
-	st := inspectRepo(l, "alpha")
+	st := inspectRepo(&config.Config{}, l, "alpha")
 	if !driftContaining(st, `core.worktree is "", want ".."`) {
 		t.Errorf("expected core.worktree drift, got %v", st.Drift)
 	}
@@ -188,7 +189,7 @@ func TestInspectRepoUnusableDirectory(t *testing.T) {
 	l := newLayout(t)
 	os.MkdirAll(l.RepoDir("junk"), 0o755)
 
-	st := inspectRepo(l, "junk")
+	st := inspectRepo(&config.Config{}, l, "junk")
 	if !driftContaining(st, "missing .git pointer") {
 		t.Errorf("expected missing-pointer drift, got %v", st.Drift)
 	}
@@ -200,7 +201,7 @@ func TestInspectRepoUnusableDirectory(t *testing.T) {
 func TestListReposSortedAndEmpty(t *testing.T) {
 	l := newLayout(t)
 
-	statuses, err := listRepos(l)
+	statuses, err := listRepos(&config.Config{}, l)
 	if err != nil || len(statuses) != 0 {
 		t.Fatalf("empty root: listRepos = %v, %v; want none, nil", statuses, err)
 	}
@@ -208,7 +209,7 @@ func TestListReposSortedAndEmpty(t *testing.T) {
 	origin := makeOriginBranch(t, "main")
 	clonePrimary(t, l, origin, "beta")
 	clonePrimary(t, l, origin, "alpha")
-	statuses, err = listRepos(l)
+	statuses, err = listRepos(&config.Config{}, l)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,22 +221,61 @@ func TestListReposSortedAndEmpty(t *testing.T) {
 func TestWriteList(t *testing.T) {
 	var b strings.Builder
 	writeList(&b, nil)
-	if got := b.String(); got != "no managed repos\n" {
+	if got := b.String(); got != "no configured repos\n" {
 		t.Errorf("empty listing = %q", got)
 	}
 
 	b.Reset()
 	writeList(&b, []repoStatus{
 		{Name: "alpha", PrimaryDir: "main", DefaultBranch: "main",
+			ConfigURL: "git@x:alpha.git", OriginURL: "git@x:alpha.git",
 			Worktrees: []gitrepo.Worktree{{Path: "/w/T-1/alpha", Branch: "T-1-x"}}},
 		{Name: "beta", PrimaryDir: "main", DefaultBranch: "master",
+			ConfigURL: "git@x:beta.git", OriginURL: "git@x:beta.git",
 			Drift: []string{`primary folder "main" does not match default branch "master"`}},
+		{Name: "gamma", ConfigOnly: true, ConfigURL: "git@x:gamma.git"},
 	})
-	want := "alpha (main)\n" +
-		"  worktree /w/T-1/alpha (T-1-x)\n" +
-		"beta (master)\n" +
-		"  drift: primary folder \"main\" does not match default branch \"master\"\n"
-	if got := b.String(); got != want {
-		t.Errorf("listing = %q, want %q", got, want)
+	got := b.String()
+	for _, want := range []string{
+		"NAME", "DEFAULT", "URL", "WORKTREES", "STATUS",
+		"alpha  main", "git@x:alpha.git", "ok",
+		"beta   master", "drift",
+		"gamma  -", "configured, not cloned",
+		"  alpha worktree /w/T-1/alpha (T-1-x)",
+		`  beta drift: primary folder "main" does not match default branch "master"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listing missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestListReposIncludesConfigOnly(t *testing.T) {
+	l := newLayout(t)
+	clonePrimary(t, l, makeOriginBranch(t, "main"), "alpha")
+	cfg := &config.Config{Repos: map[string]config.RepoConfig{
+		"alpha": {URL: "git@x:alpha.git"},
+		"ghost": {URL: "git@x:ghost.git", DefaultBranch: "trunk"},
+	}}
+	statuses, err := listRepos(cfg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("got %d statuses, want 2: %+v", len(statuses), statuses)
+	}
+	byName := map[string]repoStatus{}
+	for _, st := range statuses {
+		byName[st.Name] = st
+	}
+	if byName["alpha"].ConfigOnly {
+		t.Error("alpha should not be config-only")
+	}
+	if byName["alpha"].ConfigURL != "git@x:alpha.git" {
+		t.Errorf("alpha config URL = %q", byName["alpha"].ConfigURL)
+	}
+	ghost := byName["ghost"]
+	if !ghost.ConfigOnly || ghost.DefaultBranch != "trunk" || ghost.ConfigURL != "git@x:ghost.git" {
+		t.Errorf("ghost = %+v", ghost)
 	}
 }

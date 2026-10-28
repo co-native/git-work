@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/co-native/git-work/internal/layout"
 )
 
 func TestLoadMissingReturnsDefaults(t *testing.T) {
@@ -253,5 +255,32 @@ func TestDefaultsUseTildeForm(t *testing.T) {
 	}
 	if want := filepath.Join(home, "dev", "repos"); l.ReposRoot != want {
 		t.Errorf("resolved default = %q; want %q", l.ReposRoot, want)
+	}
+}
+
+func TestModeResolutionAndValidation(t *testing.T) {
+	if got := (&Config{}).Mode(); got != layout.ModeWorktree {
+		t.Errorf("empty mode = %q, want worktree", got)
+	}
+	if got := (&Config{Defaults: Defaults{Mode: layout.ModeClone}}).Mode(); got != layout.ModeClone {
+		t.Errorf("configured mode = %q, want clone", got)
+	}
+	if err := (&Config{Defaults: Defaults{Mode: layout.Mode("bogus")}}).Validate(); err == nil {
+		t.Error("expected an error for an invalid defaults.mode")
+	}
+}
+
+func TestRepoURLAndDefaultBranch(t *testing.T) {
+	c := &Config{Repos: map[string]RepoConfig{
+		"api": {URL: "git@example:api.git", DefaultBranch: "main"},
+	}}
+	if got := c.RepoURL("api"); got != "git@example:api.git" {
+		t.Errorf("RepoURL = %q", got)
+	}
+	if got := c.RepoDefaultBranch("api"); got != "main" {
+		t.Errorf("RepoDefaultBranch = %q", got)
+	}
+	if c.RepoURL("missing") != "" || c.RepoDefaultBranch("missing") != "" {
+		t.Error("missing repo should resolve to empty strings")
 	}
 }

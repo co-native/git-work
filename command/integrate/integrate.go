@@ -97,7 +97,11 @@ func Run(args []string) int {
 // transfer phase reuses so nothing is recomputed between the two phases.
 type target struct {
 	r            state.Repo
-	main         string
+	repoDir      string // refs, push target
+	transferDir  string // where commits are applied (temp worktree in clone mode)
+	mode         layout.Mode
+	tempPath     string
+	resumed      bool // a clean temp worktree from a prior run was removed
 	defBranch    string
 	unintegrated []repo.Commit
 	ff           bool // transfer by fast-forward rather than cherry-pick
@@ -143,7 +147,7 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 	var targets []target
 	var violations []string
 	for _, r := range scope {
-		t, violation := preflight(o, cfg, l, r, workDir)
+		t, violation := preflight(o, cfg, l, st, r, workDir)
 		if violation != "" {
 			violations = append(violations, violation)
 		}
@@ -170,10 +174,21 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 	// Transfer: only now, with the whole set proven safe, cherry-pick.
 	for _, t := range targets {
 		if !t.report("integrating") {
+			// A resumed conflict resolution already advanced the local default
+			// branch, so --push still has something to publish.
+			if t.resumed && o.push {
+				if err := repo.PushBranch(t.repoDir, t.defBranch); err != nil {
+					return fmt.Errorf("%s: push %s: %v", t.r.Name, t.defBranch, err)
+				}
+				fmt.Printf("%s: pushed %s to origin\n", t.r.Name, t.defBranch)
+			}
 			continue
 		}
 		integrated, err := t.transfer()
 		if err != nil {
+			return err
+		}
+		if err := t.cleanup(); err != nil {
 			return err
 		}
 		if integrated == 0 {
@@ -182,7 +197,7 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 		}
 		fmt.Printf("%s: %d integrated onto %s\n", t.r.Name, integrated, t.defBranch)
 		if o.push {
-			if err := repo.PushBranch(t.main, t.defBranch); err != nil {
+			if err := repo.PushBranch(t.repoDir, t.defBranch); err != nil {
 				return fmt.Errorf("%s: push %s: %v", t.r.Name, t.defBranch, err)
 			}
 			fmt.Printf("%s: pushed %s to origin\n", t.r.Name, t.defBranch)
@@ -201,7 +216,7 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 // can be set at once: a repo that trips the --multi guard under --dry-run
 // keeps its target so the listing still shows the commits, while the
 // violation keeps the transfer from ever reaching it.
-func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, workDir string) (*target, string) {
+func preflight(o *options, cfg *config.Config, l layout.Layout, st *state.State, r state.Repo, workDir string) (*target, string) {
 	violate := func(format string, a ...any) (*target, string) {
 		return nil, fmt.Sprintf(format, a...)
 	}
@@ -226,7 +241,7 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, wo
 			"`git work config set repos.%s.integration local`", r.Name, r.Name)
 	}
 
-	main, err := l.RepoMain(r.Name)
+	main, err := workfolder.RepoDirFor(l, st, workDir, r.Name)
 	if err != nil {
 		return violate("%s: %v", r.Name, err)
 	}
@@ -248,6 +263,25 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, wo
 		return violate("%s: %s", r.Name, msg)
 	}
 
+	mode := st.Mode.OrDefault()
+	tempPath := ""
+	resumed := false
+	completed := false
+	if mode == layout.ModeClone {
+		tempPath = l.IntegrateWorktree(workDir, r.Name)
+		if _, statErr := os.Stat(tempPath); statErr == nil {
+			if o.dryRun {
+				return violate("%s: an integrate worktree already exists at %s; resolve or abort it before a dry run", r.Name, tempPath)
+			}
+			resume, rerr := repo.PrepareIntegrateWorktree(main, tempPath)
+			if rerr != nil {
+				return violate("%s: %v", r.Name, rerr)
+			}
+			resumed = resume.Resumed
+			completed = resume.Completed
+		}
+	}
+
 	if !o.noFetch {
 		if err := repo.Fetch(main); err != nil {
 			fmt.Fprintf(os.Stderr, "git-work: %s: fetch failed: %v (continuing with local refs)\n", r.Name, err)
@@ -262,30 +296,38 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, wo
 		return skip("%s: branch %s does not exist locally; nothing to integrate", r.Name, r.Branch)
 	}
 
-	defBranch, err := repo.DefaultBranchName(main)
+	defBranch, err := repo.DefaultBranchFor(main, r.DefaultBranch)
 	if err != nil {
 		return violate("%s: could not determine default branch: %v", r.Name, err)
 	}
 
-	// The primary must be clean and sitting on its default branch so the
-	// cherry-picks integrate where the pre-flight measured them.
-	if dirty, err := repo.HasUncommittedChanges(main); err != nil {
-		return violate("%s: could not check for uncommitted changes: %v", r.Name, err)
-	} else if dirty {
-		return violate("%s: primary clone %s has uncommitted changes", r.Name, main)
-	}
-	cur, err := repo.CurrentBranch(main)
-	if err != nil {
-		return violate("%s: could not determine checked-out branch: %v", r.Name, err)
-	}
-	if cur != defBranch {
-		return violate("%s: primary clone %s is on %s, not the default branch %s", r.Name, main, cur, defBranch)
+	if mode != layout.ModeClone {
+		// The primary must be clean and sitting on its default branch so the
+		// cherry-picks integrate where the pre-flight measured them. Clone mode
+		// does the transfer in a fresh temp worktree instead, so the feature
+		// checkout's state does not matter.
+		if dirty, err := repo.HasUncommittedChanges(main); err != nil {
+			return violate("%s: could not check for uncommitted changes: %v", r.Name, err)
+		} else if dirty {
+			return violate("%s: primary clone %s has uncommitted changes", r.Name, main)
+		}
+		cur, err := repo.CurrentBranch(main)
+		if err != nil {
+			return violate("%s: could not determine checked-out branch: %v", r.Name, err)
+		}
+		if cur != defBranch {
+			return violate("%s: primary clone %s is on %s, not the default branch %s", r.Name, main, cur, defBranch)
+		}
 	}
 
 	// Fast-forward the local default branch to origin - a safe, always
-	// desirable mutation; a non-fast-forward is a violation.
-	if _, err := repo.PullBranchFFOnly(main, defBranch); err != nil {
-		return violate("%s: could not fast-forward %s to origin/%s: %v", r.Name, defBranch, defBranch, err)
+	// desirable mutation; a non-fast-forward is a violation. A resumed run
+	// already has the resolved cherry-picks on the local default, so it is
+	// deliberately ahead of origin and must not be pulled back.
+	if !completed {
+		if _, err := repo.PullBranchFFOnly(main, defBranch); err != nil {
+			return violate("%s: could not fast-forward %s to origin/%s: %v", r.Name, defBranch, defBranch, err)
+		}
 	}
 
 	// Measure against the LOCAL default branch (the cherry-pick target),
@@ -294,6 +336,12 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, wo
 	unintegrated, err := repo.CommitsNotIn(main, r.Branch, defBranch)
 	if err != nil {
 		return violate("%s: could not compute un-integrated commits: %v", r.Name, err)
+	}
+	if completed {
+		// The operator finished the conflict resolution; the resolved patches
+		// deliberately no longer match the original commits, so patch
+		// equivalence cannot see them. The marker and moved HEAD are the proof.
+		unintegrated = nil
 	}
 	// Prefer a fast-forward: possible exactly when the default branch is
 	// an ancestor of the work branch, i.e. nothing integrated on the default
@@ -315,7 +363,7 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, r state.Repo, wo
 			return violate("%s: could not check whether %s can fast-forward to %s: %v", r.Name, defBranch, r.Branch, err)
 		}
 	}
-	t := &target{r: r, main: main, defBranch: defBranch, unintegrated: unintegrated, ff: ff}
+	t := &target{r: r, repoDir: main, mode: mode, tempPath: tempPath, resumed: resumed, defBranch: defBranch, unintegrated: unintegrated, ff: ff}
 
 	// The --multi guard applies to both mechanisms. A fast-forward carries
 	// no per-commit risk, but the guard is about intent - integrating commits
@@ -352,19 +400,33 @@ func (t target) report(verb string) bool {
 // that conflicts is left in progress and returned as an error naming the
 // way out; the caller halts before touching any remaining repo.
 func (t target) transfer() (int, error) {
+	transferDir := t.repoDir
+	if t.mode == layout.ModeClone {
+		if err := repo.AddWorktree(t.repoDir, t.tempPath, t.defBranch, "", false); err != nil {
+			return 0, fmt.Errorf("%s: create integrate worktree %s: %v", t.r.Name, t.tempPath, err)
+		}
+		transferDir = t.tempPath
+		base, err := repo.RevParse(t.repoDir, t.defBranch)
+		if err != nil {
+			return 0, fmt.Errorf("%s: record integrate base: %v", t.r.Name, err)
+		}
+		if err := repo.WriteIntegrateMarker(t.tempPath, base); err != nil {
+			return 0, fmt.Errorf("%s: write integrate marker: %v", t.r.Name, err)
+		}
+	}
 	if t.ff {
 		// A pointer move, so it is atomic and cannot conflict - pre-flight
 		// already established the ancestry --ff-only requires, leaving no
 		// half-transferred state for this path to report.
-		if err := repo.FastForwardTo(t.main, t.r.Branch); err != nil {
+		if err := repo.FastForwardTo(transferDir, t.r.Branch); err != nil {
 			return 0, fmt.Errorf("%s: fast-forward %s to %s in %s: %v",
-				t.r.Name, t.defBranch, t.r.Branch, t.main, err)
+				t.r.Name, t.defBranch, t.r.Branch, transferDir, err)
 		}
 		return len(t.unintegrated), nil
 	}
 	integrated := 0
 	for _, c := range t.unintegrated {
-		status, err := repo.CherryPick(t.main, c.SHA)
+		status, err := repo.CherryPick(transferDir, c.SHA)
 		if err != nil {
 			return integrated, fmt.Errorf("%s: cherry-pick %s: %v", t.r.Name, c.Short(), err)
 		}
@@ -377,8 +439,20 @@ func (t target) transfer() (int, error) {
 			return integrated, fmt.Errorf("%s: cherry-pick of %s conflicted in %s; the pick is in progress. "+
 				"Resolve it there, or run `git cherry-pick --abort` in %s to restore %s. "+
 				"Halted before integrating any remaining repos.",
-				t.r.Name, c.Short(), t.main, t.main, t.defBranch)
+				t.r.Name, c.Short(), transferDir, transferDir, t.defBranch)
 		}
 	}
 	return integrated, nil
+}
+
+// cleanup removes the clone-mode transfer worktree after a successful
+// transfer. A conflict leaves it in place for the operator to resolve.
+func (t target) cleanup() error {
+	if t.mode != layout.ModeClone || t.tempPath == "" {
+		return nil
+	}
+	if err := repo.RemoveWorktree(t.repoDir, t.tempPath, false); err != nil {
+		return fmt.Errorf("%s: remove integrate worktree %s: %v", t.r.Name, t.tempPath, err)
+	}
+	return nil
 }

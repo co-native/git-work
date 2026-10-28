@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
 	gitrepo "github.com/co-native/git-work/internal/repo"
 )
@@ -15,7 +16,7 @@ import (
 // "..", and no drift reported by inspectRepo.
 func assertConforming(t *testing.T, l layout.Layout, name, def string) {
 	t.Helper()
-	st := inspectRepo(l, name)
+	st := inspectRepo(&config.Config{}, l, name)
 	if len(st.Drift) != 0 {
 		t.Errorf("%s: drift after adopt: %v", name, st.Drift)
 	}
@@ -288,5 +289,25 @@ func TestResolveSource(t *testing.T) {
 				t.Errorf("resolveSource(%q) = %q, %v; want %q", tt.arg, got, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestAdoptedRepoName(t *testing.T) {
+	l := layout.Layout{ReposRoot: "/repos"}
+	cases := map[string]string{
+		"/repos/alpha":      "alpha",
+		"/repos/alpha/main": "alpha",
+		"/elsewhere/beta":   "beta",
+		"relative/gamma":    "gamma",
+	}
+	for src, want := range cases {
+		// Relative paths are not compared here: adoptedRepoName is called with
+		// an absolute path from runAdopt.
+		if !filepath.IsAbs(src) {
+			continue
+		}
+		if got := adoptedRepoName(l, src); got != want {
+			t.Errorf("adoptedRepoName(%q) = %q, want %q", src, got, want)
+		}
 	}
 }

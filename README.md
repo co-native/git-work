@@ -6,11 +6,13 @@ of work.
 One change often spans several repos. Doing that by hand means a branch per repo, a
 checkout per repo, remembering which branch you used where, and - at the end - working out
 which of them are safe to delete. `git-work` makes that one unit: a **work folder**
-holding one git worktree per participating repo, all on a shared branch, created and torn
-down as a set.
+holding one checkout per participating repo - a linked worktree, or a self-contained full
+clone in clone mode - all on a shared branch, created and torn down as a set.
 
 ```
-git work new PROJ-123 --repos api,web    # a folder with two worktrees, branches created
+git work new PROJ-123 --repos api,web    # a folder with two checkouts, branches created
+# or, with no primary repos tree:
+git work new PROJ-123 --repos api,web --mode clone
 cd ~/dev/work/PROJ-123-add-auth          # edit across both repos
 git work push -a                         # push both work branches
 git work done PROJ-123-add-auth          # safety-check and tear the whole thing down
@@ -49,13 +51,17 @@ Two roots, both configurable:
 ```
 ~/dev/repos/<repo>/main/         # the primary clone, one per repo (the "repos root")
 ~/dev/work/<ticket>-<slug>/      # a work folder, one per unit of work (the "work root")
-├── .git-work.yaml               #   its state: repos, branches, ticket
-├── api/                         #   a worktree of ~/dev/repos/api
+├── .git-work.yaml               #   its state: mode, repos, branches, ticket
+├── api/                         #   a worktree of ~/dev/repos/api (worktree mode)
 └── web/                         #   a worktree of ~/dev/repos/web
 ```
 
-Worktrees rather than clones, so every repo is fetched once and a work folder costs a
-checkout rather than a copy of history.
+By default, worktrees rather than clones, so every repo is fetched once and a work folder
+costs a checkout rather than a copy of history. Clone mode is the self-contained
+alternative: `--mode clone` (or `defaults.mode: clone`) puts a full clone at
+`<work>/<repo>` and needs no primary tree, so the folder can be moved or mounted into a
+container. `.worktrees/` inside a clone-mode folder is reserved for the transient
+`integrate` checkout and for subagent worktrees.
 
 ## Getting started
 
@@ -98,10 +104,14 @@ paths:
 
 instructions_file: AGENTS.md # the agent instructions file generated per work folder; or CLAUDE.md
 
-repos: # per-repo overrides
+defaults:
+  mode: clone # worktree (default) or clone for new work folders
+
+repos: # per-repo overrides and the clone-mode URL registry
   api:
     add_by_default: true # pre-ticked in `git work new`'s picker
     integration: pr # reaches its default branch via PR; `git work integrate` refuses
+    url: git@github.com:acme/api.git # lets clone mode create it without a primary
 
 ticket_providers: # optional, for fetching ticket titles
   - name: jira

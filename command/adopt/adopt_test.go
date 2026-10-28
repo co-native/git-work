@@ -298,8 +298,8 @@ func TestAdoptRejections(t *testing.T) {
 		name, target, wantErr string
 	}{
 		{"missing dir", filepath.Join(workDir, "nope"), "not an existing directory"},
-		{"no .git", plain, "not a git worktree"},
-		{"full clone", clone, "not a worktree of a managed primary"},
+		{"no .git", plain, "not a git checkout"},
+		{"full clone", clone, "default branch and cannot be a work branch"},
 		{"unmanaged primary", unmanagedWt, "not a worktree of a managed primary"},
 		{"name mismatch", renamed, "does not match its repo"},
 	}
@@ -458,5 +458,43 @@ func TestReadoptRefusesADetachedWorktree(t *testing.T) {
 	}
 	if st.Repos[0].Branch != "T-2-y" {
 		t.Errorf("recorded branch = %q; want it left at T-2-y", st.Repos[0].Branch)
+	}
+}
+
+func TestAdoptCloneMode(t *testing.T) {
+	l := newLayout(t)
+	origin := makeOrigin(t)
+	workDir := filepath.Join(l.WorkRoot, "T-4-x")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(workDir, "alpha")
+	mustRun(t, "", "git", "clone", "-q", origin, clone)
+	mustRun(t, clone, "git", "switch", "-q", "-c", "T-4-x")
+
+	var out strings.Builder
+	if err := adoptOne(&out, l, workDir, clone); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode != layout.ModeClone {
+		t.Errorf("mode = %q, want clone", st.Mode)
+	}
+	if len(st.Repos) != 1 || st.Repos[0].Branch != "T-4-x" || st.Repos[0].DefaultBranch != "main" {
+		t.Errorf("repo state = %+v", st.Repos)
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Errorf("clone was moved: %v", err)
+	}
+
+	out.Reset()
+	if err := adoptOne(&out, l, workDir, clone); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "nothing to do") {
+		t.Errorf("re-adopt output = %q", out.String())
 	}
 }

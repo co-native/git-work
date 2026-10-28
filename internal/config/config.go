@@ -68,7 +68,8 @@ func OtherInstructionsFile(file string) string {
 // to be able to override it in either direction. A *bool would do it too, at
 // the cost of the only pointer field in this config.
 type Defaults struct {
-	Integration string `yaml:"integration,omitempty" json:"integration,omitempty"`
+	Integration string      `yaml:"integration,omitempty" json:"integration,omitempty"`
+	Mode        layout.Mode `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
 // RepoConfig overrides Defaults for one repo. Fields shared with Defaults use
@@ -77,6 +78,13 @@ type Defaults struct {
 type RepoConfig struct {
 	AddByDefault bool   `yaml:"add_by_default,omitempty" json:"add_by_default,omitempty"`
 	Integration  string `yaml:"integration,omitempty" json:"integration,omitempty"`
+	// URL is the clone URL for the repo, used by clone mode when no local
+	// primary exists to read origin from. It is also the auto-registration
+	// target for repo clone/adopt.
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+	// DefaultBranch is an optional override for a remote that cannot advertise
+	// a symbolic HEAD. It is normally recorded in work-folder state instead.
+	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
 }
 
 // ValidRoute reports whether s is an accepted `integration` value. The empty
@@ -97,6 +105,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("defaults.integration: invalid route %q (want %s)",
 			c.Defaults.Integration, strings.Join(IntegrationRoutes, " or "))
 	}
+	if _, err := layout.ParseMode(string(c.Defaults.Mode)); err != nil {
+		return fmt.Errorf("defaults.mode: %w", err)
+	}
 	for name, r := range c.Repos {
 		if !ValidRoute(r.Integration) {
 			return fmt.Errorf("repos.%s.integration: invalid route %q (want %s)",
@@ -104,6 +115,36 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Mode resolves the house checkout mode. An empty value means worktree.
+func (c *Config) Mode() layout.Mode {
+	m, err := layout.ParseMode(string(c.Defaults.Mode))
+	if err != nil {
+		return layout.ModeWorktree
+	}
+	return m
+}
+
+// RepoURL returns the configured clone URL for a repo, or "".
+func (c *Config) RepoURL(name string) string {
+	return c.Repos[name].URL
+}
+
+// RepoDefaultBranch returns the configured default-branch override, or "".
+func (c *Config) RepoDefaultBranch(name string) string {
+	return c.Repos[name].DefaultBranch
+}
+
+// SetRepoURL records a repo's clone URL, creating its config entry when absent.
+// Callers persist with SaveTo.
+func (c *Config) SetRepoURL(name, url string) {
+	if c.Repos == nil {
+		c.Repos = map[string]RepoConfig{}
+	}
+	r := c.Repos[name]
+	r.URL = url
+	c.Repos[name] = r
 }
 
 // Integration resolves the route for a repo: per-repo override, else the
@@ -275,6 +316,12 @@ func DefaultPath() string {
 // git-work creates and destroys folders inside.
 func OverlayDir() string {
 	return filepath.Dir(DefaultPath())
+}
+
+// RepoOverlayDir is where per-repo operator overlays live:
+// <config-dir>/repo-instructions/<repo>.md.
+func RepoOverlayDir() string {
+	return filepath.Join(OverlayDir(), "repo-instructions")
 }
 
 // Load reads the default config path.

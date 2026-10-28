@@ -64,3 +64,29 @@ func TestDeriveDir(t *testing.T) {
 		}
 	}
 }
+
+func TestStripNoRegister(t *testing.T) {
+	cases := []struct {
+		args []string
+		rest []string
+		no   bool
+	}{
+		{[]string{"url"}, []string{"url"}, false},
+		{[]string{"--no-register", "url"}, []string{"url"}, true},
+		{[]string{"--depth", "1", "--no-register", "--", "url"}, []string{"--depth", "1", "--", "url"}, true},
+		{[]string{"url", "--", "--no-register"}, []string{"url", "--", "--no-register"}, false},
+	}
+	for _, tc := range cases {
+		got, no := stripNoRegister(tc.args)
+		if no != tc.no || len(got) != len(tc.rest) {
+			t.Errorf("stripNoRegister(%v) = %v, %v", tc.args, got, no)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.rest[i] {
+				t.Errorf("stripNoRegister(%v) = %v, want %v", tc.args, got, tc.rest)
+				break
+			}
+		}
+	}
+}

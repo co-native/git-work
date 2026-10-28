@@ -235,3 +235,37 @@ func TestUnsetUnknownRepo(t *testing.T) {
 		t.Fatal("expected error for an unknown repo")
 	}
 }
+
+func TestModeAndRepoURLKeys(t *testing.T) {
+	c := baseConfig()
+	if err := setKey(c, "defaults.mode", []string{"clone"}); err != nil {
+		t.Fatal(err)
+	}
+	if c.Defaults.Mode != "clone" {
+		t.Errorf("defaults.mode = %q", c.Defaults.Mode)
+	}
+	if v, err := getKey(c, "defaults.mode"); err != nil || v != "clone" {
+		t.Errorf("get defaults.mode = %q, %v", v, err)
+	}
+	if err := setKey(c, "repos.api.url", []string{"git@example:api.git"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := setKey(c, "repos.api.default_branch", []string{"main"}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := getKey(c, "repos.api.url"); v != "git@example:api.git" {
+		t.Errorf("repos.api.url = %q", v)
+	}
+	if v, _ := getKey(c, "repos.api.default_branch"); v != "main" {
+		t.Errorf("repos.api.default_branch = %q", v)
+	}
+	if err := setKey(c, "defaults.mode", []string{"bogus"}); err == nil {
+		t.Error("expected an error for an invalid mode")
+	}
+	if err := unsetKey(c, "defaults.mode"); err != nil {
+		t.Fatal(err)
+	}
+	if c.Defaults.Mode != "" {
+		t.Errorf("defaults.mode after unset = %q", c.Defaults.Mode)
+	}
+}

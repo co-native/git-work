@@ -35,7 +35,7 @@ var Cmd = &cli.Command{
 		"git work push -a|--all [options]",
 	},
 	Long: "Pushes work branches to origin - the multi-repo equivalent of `cd`-ing into\n" +
-		"each worktree and running `git push`. A repo is pushed when its work branch\n" +
+		"each checkout and running `git push`. A repo is pushed when its work branch\n" +
 		"has commits origin does not have yet: missing from origin/<default> (the local\n" +
 		"default branch stands in while origin has none) or from origin/<branch> - so\n" +
 		"integrated-but-unpushed work still reaches origin. Scope is mandatory.",
@@ -123,13 +123,17 @@ func push(o *options, l layout.Layout, st *state.State, workDir string) error {
 		failures = append(failures, fmt.Sprintf(format, a...))
 	}
 	for _, r := range scope {
-		main, err := l.RepoMain(r.Name)
+		main, err := workfolder.RepoDirFor(l, st, workDir, r.Name)
 		if err != nil {
 			fail("%s: %v", r.Name, err)
 			continue
 		}
 		if o.main {
-			pushDefaultBranch(o, r.Name, main, fail)
+			if st.Mode.OrDefault() == layout.ModeClone && workfolder.IntegrateInProgress(l, workDir, r.Name) {
+				fail("%s: an integrate conflict is waiting in %s; resolve or abort it first", r.Name, l.IntegrateWorktree(workDir, r.Name))
+				continue
+			}
+			pushDefaultBranch(o, r.Name, main, r.DefaultBranch, fail)
 		} else {
 			pushWorkBranch(o, r, main, workDir, fail)
 		}
@@ -172,7 +176,7 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 		return
 	}
 
-	defBranch, err := repo.DefaultBranchName(main)
+	defBranch, err := repo.DefaultBranchFor(main, r.DefaultBranch)
 	if err != nil {
 		fail("%s: could not determine default branch: %v", r.Name, err)
 		return
@@ -271,8 +275,8 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 // worktree or an already-integrated (and therefore "empty") work branch must not
 // stop the default branch from reaching origin. parseFlags rejects -f with
 // --main, so this never force-pushes.
-func pushDefaultBranch(o *options, name, main string, fail func(string, ...any)) {
-	defBranch, err := repo.DefaultBranchName(main)
+func pushDefaultBranch(o *options, name, main, recorded string, fail func(string, ...any)) {
+	defBranch, err := repo.DefaultBranchFor(main, recorded)
 	if err != nil {
 		fail("%s: could not determine default branch: %v", name, err)
 		return

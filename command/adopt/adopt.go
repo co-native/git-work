@@ -18,6 +18,7 @@ import (
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/workfolder"
 )
 
 // Cmd describes `git work adopt` for the help system. main.go builds its index
@@ -102,6 +103,9 @@ func resolveWorkDir(cwd, target string) (string, error) {
 	if !sameDir(workDir, expected) {
 		return "", cli.Usagef("%s is not a subdirectory of the current work folder %s; run `git work adopt` from inside the work folder being adopted into", target, expected)
 	}
+	if err := workfolder.RefuseInsideWorktrees(cwd, expected); err != nil {
+		return "", err
+	}
 	return workDir, nil
 }
 
@@ -117,25 +121,35 @@ func sameDir(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// adoptOne registers the worktree at target in workDir's state file,
-// creating the state file first when workDir is entirely unmanaged.
-// Re-adopting an already-registered repo is a no-op with a message.
+// adoptOne registers the checkout at target in workDir's state file, creating
+// the state file first when workDir is entirely unmanaged. Clone-mode folders
+// accept full clones in place; worktree-mode folders keep the linked-worktree
+// rule. Re-adopting an already-registered repo re-records its branch.
 func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
-	if fi, err := os.Stat(target); err != nil || !fi.IsDir() {
+	fi, err := os.Stat(target)
+	if err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s: not an existing directory", target)
 	}
-	repoName, branch, err := validateWorktree(l, target)
+	mode, err := adoptMode(workDir, target)
+	if err != nil {
+		return err
+	}
+	repoName, branch, defBranch, err := validateRepo(l, mode, target)
 	if err != nil {
 		return err
 	}
 	if base := filepath.Base(target); base != repoName {
-		return fmt.Errorf("%s: directory name %q does not match its repo %q - the state file references worktrees by repo name; rename the directory first", target, base, repoName)
+		return fmt.Errorf("%s: directory name %q does not match its repo %q - the state file references checkouts by repo name; rename the directory first", target, base, repoName)
 	}
 	// Refuse to record the repo's default branch as a work branch. Recording is
 	// not itself destructive, so a repo whose default branch cannot be
 	// determined is a warning rather than a refusal - teardown re-checks before
 	// it deletes anything, which is where the cost actually lands.
-	if main, merr := l.RepoMain(repoName); merr != nil {
+	if mode == layout.ModeClone {
+		if branch == defBranch {
+			return fmt.Errorf("%s: %s is the repo's default branch and cannot be a work branch; create one first (`git switch -c <name>`), or let `git work add` create it", target, branch)
+		}
+	} else if main, merr := l.RepoMain(repoName); merr != nil {
 		fmt.Fprintf(os.Stderr, "git-work: warning: %s: could not locate the primary clone to check the default branch: %v\n", repoName, merr)
 	} else if problem, perr := repo.DefaultBranchProblem(main, branch); perr != nil {
 		fmt.Fprintf(os.Stderr, "git-work: warning: %s: could not determine the default branch: %v\n", repoName, perr)
@@ -146,9 +160,12 @@ func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
 	created := false
 	if os.IsNotExist(err) {
 		st = bootstrapState(filepath.Base(workDir), branch)
+		st.Mode = mode
 		created = true
 	} else if err != nil {
 		return err
+	} else if st.Mode.OrDefault() != mode {
+		return fmt.Errorf("%s is a %s-mode work folder, but %s is a %s checkout; a folder cannot mix modes", workDir, st.Mode.OrDefault(), target, mode)
 	}
 	// An already-registered repo whose branch still matches is the no-op it
 	// always was. When it no longer matches, re-adopting re-records it: state
@@ -161,13 +178,16 @@ func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
 		if r.Name != repoName {
 			continue
 		}
-		if r.Branch == branch {
+		if r.Branch == branch && (mode != layout.ModeClone || r.DefaultBranch == defBranch) {
 			fmt.Fprintf(w, "%s is already registered in %s on branch %s; nothing to do\n",
 				repoName, filepath.Join(workDir, state.FileName), branch)
 			return nil
 		}
 		st.Repos[i].Branch = branch
 		st.Repos[i].BranchSource = "existing"
+		if mode == layout.ModeClone {
+			st.Repos[i].DefaultBranch = defBranch
+		}
 		if err := st.Save(workDir); err != nil {
 			return err
 		}
@@ -175,17 +195,21 @@ func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
 			repoName, branch, r.Branch)
 		return nil
 	}
-	st.Repos = append(st.Repos, state.Repo{Name: repoName, BranchSource: "existing", Branch: branch})
+	rec := state.Repo{Name: repoName, BranchSource: "existing", Branch: branch}
+	if mode == layout.ModeClone {
+		rec.DefaultBranch = defBranch
+	}
+	st.Repos = append(st.Repos, rec)
 	if err := st.Save(workDir); err != nil {
 		return err
 	}
 	if created {
 		if st.NoTicket {
-			fmt.Fprintf(w, "Created %s (ticketless; the folder name %s matches no ticket pattern)\n",
-				filepath.Join(workDir, state.FileName), st.Title)
+			fmt.Fprintf(w, "Created %s (%s mode, ticketless; the folder name %s matches no ticket pattern)\n",
+				filepath.Join(workDir, state.FileName), mode, st.Title)
 		} else {
-			fmt.Fprintf(w, "Created %s (ticket %s inferred from the folder name)\n",
-				filepath.Join(workDir, state.FileName), st.TicketID)
+			fmt.Fprintf(w, "Created %s (%s mode, ticket %s inferred from the folder name)\n",
+				filepath.Join(workDir, state.FileName), mode, st.TicketID)
 		}
 	}
 	fmt.Fprintf(w, "Registered %s (branch %s); run `git work refresh` to update the generated files\n",
@@ -193,13 +217,48 @@ func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
 	return nil
 }
 
-// validateWorktree checks that target is a linked git worktree of a managed
-// primary clone under the repos root, returning the repo name and the branch
-// checked out in the worktree.
-func validateWorktree(l layout.Layout, target string) (repoName, branch string, err error) {
+// adoptMode returns the folder's mode, inferring it from the target's .git
+// entry when the folder is still unmanaged: a directory is a full clone, a
+// file is a linked worktree.
+func adoptMode(workDir, target string) (layout.Mode, error) {
+	if st, err := state.Load(workDir); err == nil {
+		return st.Mode.OrDefault(), nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
 	fi, err := os.Stat(filepath.Join(target, ".git"))
 	if err != nil {
-		return "", "", fmt.Errorf("%s: not a git worktree (no .git)", target)
+		return "", fmt.Errorf("%s: not a git checkout (no .git)", target)
+	}
+	if fi.IsDir() {
+		return layout.ModeClone, nil
+	}
+	return layout.ModeWorktree, nil
+}
+
+// validateRepo checks that target matches the folder's mode and returns its
+// repo name, current branch, and (clone mode only) default branch.
+func validateRepo(l layout.Layout, mode layout.Mode, target string) (repoName, branch, defaultBranch string, err error) {
+	fi, err := os.Stat(filepath.Join(target, ".git"))
+	if err != nil {
+		return "", "", "", fmt.Errorf("%s: not a git checkout (no .git)", target)
+	}
+	if mode == layout.ModeClone {
+		if !fi.IsDir() {
+			return "", "", "", fmt.Errorf("%s: a linked worktree, but %s is a clone-mode work folder; adopt the full clone at %s/%s instead", target, filepath.Dir(target), filepath.Dir(target), filepath.Base(target))
+		}
+		if _, err := repo.RemoteURL(target); err != nil {
+			return "", "", "", fmt.Errorf("%s: a full clone without an origin remote cannot be pushed or torn down: %w", target, err)
+		}
+		def, err := repo.DefaultBranchFor(target, "")
+		if err != nil {
+			return "", "", "", fmt.Errorf("%s: %w", target, err)
+		}
+		br, err := repo.CurrentBranch(target)
+		if err != nil {
+			return "", "", "", fmt.Errorf("%s: %w", target, err)
+		}
+		return filepath.Base(target), br, def, nil
 	}
 	if fi.IsDir() {
 		// Converting a clone into a worktree is out of scope for one command -
@@ -208,16 +267,16 @@ func validateWorktree(l layout.Layout, target string) (repoName, branch string, 
 		// Naming the two steps and their order is the whole remedy, and every
 		// other refusal in this function names its remedy too.
 		name := filepath.Base(target)
-		return "", "", fmt.Errorf("%s: a full git clone, not a worktree of a managed primary.\n"+
+		return "", "", "", fmt.Errorf("%s: a full git clone, but %s is a worktree-mode work folder.\n"+
 			"  To bring it into the managed layout, run these from the work folder, in order:\n"+
 			"    git work repo adopt ./%s    # moves the clone under the repos root\n"+
 			"    git work add --repos %s     # creates a worktree here, on the work branch\n"+
 			"  The first step moves the directory, so do not run it from inside ./%s.",
-			target, name, name, name)
+			target, filepath.Dir(target), name, name, name)
 	}
 	common, err := repo.CommonGitDir(target)
 	if err != nil {
-		return "", "", fmt.Errorf("%s: %w", target, err)
+		return "", "", "", fmt.Errorf("%s: %w", target, err)
 	}
 	if resolved, rerr := filepath.EvalSymlinks(common); rerr == nil {
 		common = resolved
@@ -225,26 +284,26 @@ func validateWorktree(l layout.Layout, target string) (repoName, branch string, 
 	// A managed worktree's common git dir is <repos-root>/<repo>/<primary>/.git.
 	root, rerr := filepath.EvalSymlinks(l.ReposRoot)
 	if rerr != nil || filepath.Base(common) != ".git" {
-		return "", "", notManaged(target, common, l.ReposRoot)
+		return "", "", "", notManaged(target, common, l.ReposRoot)
 	}
 	primary := filepath.Dir(common)
 	repoDir := filepath.Dir(primary)
 	if filepath.Dir(repoDir) != root {
-		return "", "", notManaged(target, common, l.ReposRoot)
+		return "", "", "", notManaged(target, common, l.ReposRoot)
 	}
 	repoName = filepath.Base(repoDir)
 	dir, perr := layout.PrimaryDir(repoDir)
 	if perr != nil {
-		return "", "", fmt.Errorf("%s: %s is not a managed primary clone (%v); run `git work repos adopt %s` first", target, repoDir, perr, repoName)
+		return "", "", "", fmt.Errorf("%s: %s is not a managed primary clone (%v); run `git work repos adopt %s` first", target, repoDir, perr, repoName)
 	}
 	if dir != filepath.Base(primary) {
-		return "", "", fmt.Errorf("%s: %s's .git pointer names primary %q but the worktree belongs to %q; run `git work repos adopt %s` to normalize", target, repoDir, dir, filepath.Base(primary), repoName)
+		return "", "", "", fmt.Errorf("%s: %s's .git pointer names primary %q but the worktree belongs to %q; run `git work repos adopt %s` to normalize", target, repoDir, dir, filepath.Base(primary), repoName)
 	}
 	branch, err = repo.CurrentBranch(target)
 	if err != nil {
-		return "", "", fmt.Errorf("%s: %w", target, err)
+		return "", "", "", fmt.Errorf("%s: %w", target, err)
 	}
-	return repoName, branch, nil
+	return repoName, branch, "", nil
 }
 
 // notManaged is the rejection for a git dir outside the repos root.

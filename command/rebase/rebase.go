@@ -36,8 +36,9 @@ var Cmd = &cli.Command{
 		"git work rebase <repo> [options]",
 		"git work rebase -a|--all [options]",
 	},
-	Long: "Pulls each in-scope repo's primary clone ff-only, then rebases the branch\n" +
-		"checked out in its worktree - not the one recorded in state - onto that repo's\n" +
+	Long: "Freshens each in-scope repo's default branch (primary clone in worktree mode,\n" +
+		"clone in clone mode), then rebases the branch\n" +
+		"checked out in its checkout - not the one recorded in state - onto that repo's\n" +
 		"default branch. Scope is mandatory: bare `rebase` is a usage error, so no run\n" +
 		"silently rewrites history in repos you did not name. Repos are independent -\n" +
 		"problems are collected and reported at the end, and a conflicted rebase is left\n" +
@@ -121,7 +122,7 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 	for _, r := range scope {
 		wt := filepath.Join(workDir, r.Name)
 		if _, err := os.Stat(wt); os.IsNotExist(err) {
-			fmt.Fprintf(errw, "git-work: %s: worktree missing; skipping\n", r.Name)
+			fmt.Fprintf(errw, "git-work: %s: checkout missing; skipping\n", r.Name)
 			continue
 		}
 		// Checked before the pull so a repo we are going to refuse costs no
@@ -136,12 +137,16 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 			problem("%s: %s", r.Name, msg)
 			continue
 		}
-		main, err := l.RepoMain(r.Name)
+		if st.Mode.OrDefault() == layout.ModeClone && workfolder.IntegrateInProgress(l, workDir, r.Name) {
+			problem("%s: an integrate conflict is waiting in %s; resolve or abort it first", r.Name, l.IntegrateWorktree(workDir, r.Name))
+			continue
+		}
+		main, err := workfolder.RepoDirFor(l, st, workDir, r.Name)
 		if err != nil {
 			problem("%s: %v", r.Name, err)
 			continue
 		}
-		target, err := repo.DefaultBranchName(main)
+		target, err := repo.DefaultBranchFor(main, r.DefaultBranch)
 		if err != nil {
 			problem("%s: %v", r.Name, err)
 			continue
