@@ -571,13 +571,13 @@ Tears down a work folder. `<dir>` is a bare name (resolved under the work root) 
 worktrees/branches are skipped with a note, and all failures are collected and reported at
 the end (nonzero exit, folder kept).
 
-**Run it from outside the folder being torn down.** Nothing stops you running it from
-inside - on Unix the removal succeeds and exits 0, leaving your shell in a directory that
-no longer exists: `pwd` keeps printing the old path, `ls` comes back empty, and anything
-that resolves the working directory starts failing until you `cd` elsewhere. The same is
-true from inside one of the repo worktrees. Windows is stricter about deleting a directory
-that is a running process's working directory, so there the teardown is likely to fail
-partway instead; either way, `cd` out first.
+**Run it from outside the folder being torn down.** `done` refuses to start when the
+current directory is the work folder or any directory below it, including one of the repo
+checkouts. On Windows, removing a directory that is the process's working directory fails;
+on Unix it leaves the shell in a directory that no longer exists - `pwd` keeps printing
+the old path, `ls` comes back empty, and anything that resolves the working directory
+starts failing until you `cd` elsewhere. The refusal happens before state is loaded or any
+checks run, so the folder is untouched.
 
 Safety checks (per repo): uncommitted changes, unpushed commits, and - when deleting
 branches - whether the branch is merged into the remote default branch (from

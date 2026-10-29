@@ -42,7 +42,8 @@ var Cmd = &cli.Command{
 		"the end, and a re-run resumes exactly the repos still outstanding. --force\n" +
 		"overrides safety-check problems (uncommitted, unpushed, unmerged) but never\n" +
 		"deletes files git-work did not create - that is --remove-all, which --force\n" +
-		"does NOT imply; without it such a folder is kept and the run still succeeds.",
+		"does NOT imply; without it such a folder is kept and the run still succeeds.\n" +
+		"Run it from outside the folder: done removes the folder.",
 	Examples: []string{
 		"git work done PROJ-123-add-auth --delete-local --delete-remote",
 		"git work done ~/dev/work/PROJ-123-add-auth --non-interactive --remove-all",
@@ -127,6 +128,9 @@ func run(args []string) error {
 	}
 	if err := workfolder.RefuseInsideWorktrees(cwd, workDir); err != nil {
 		return err
+	}
+	if insideDir(workDir, cwd) {
+		return cli.Usagef("refusing to tear down %s from inside it: done removes the folder; run it from outside, e.g. `cd %s && git work done %s`", workDir, filepath.Dir(workDir), workDir)
 	}
 	st, err := state.Load(workDir)
 	if err != nil {
@@ -215,6 +219,34 @@ func run(args []string) error {
 	}
 	fmt.Printf("Closed out %s (%d repo(s))\n", workDir, repoCount)
 	return nil
+}
+
+// insideDir reports whether child is parent or a descendant of it. A failed
+// Rel, an absolute result (a different volume on Windows), ".." and "../x"
+// all mean outside; everything else is inside, including "." and names that
+// merely begin with a dot.
+func insideDir(parent, child string) bool {
+	// Walk up from child and compare by file identity. That handles symlinks
+	// (macOS /var vs /private/var) and case-insensitive paths, neither of which
+	// a string-prefix or filepath.Rel check gets right.
+	parentInfo, err := os.Stat(parent)
+	if err != nil || !parentInfo.IsDir() {
+		return false
+	}
+	for {
+		info, err := os.Stat(child)
+		if err != nil {
+			return false
+		}
+		if os.SameFile(parentInfo, info) {
+			return true
+		}
+		next := filepath.Dir(child)
+		if next == child {
+			return false
+		}
+		child = next
+	}
 }
 
 // containsPathSeparator reports whether s holds a path separator for this OS.

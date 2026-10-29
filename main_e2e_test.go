@@ -969,6 +969,15 @@ func TestCloneModeRelocation(t *testing.T) {
 	sh(t, clone, "git", "add", "moved.txt")
 	sh(t, clone, "git", "commit", "-qm", "moved")
 
+	// done removes the folder, so running it from inside is refused before any
+	// teardown. This is the Windows failure the old test used to hit.
+	if out, err := gwRun(t, bin, oldDir, env, "done", oldDir, "--non-interactive"); err == nil || !strings.Contains(out, "refusing to tear down") {
+		t.Fatalf("done from inside the folder = %v, want a refusal:\n%s", err, out)
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		t.Fatalf("refusal removed the work folder: %v", err)
+	}
+
 	newDir := filepath.Join(home, "relocated", "PROJ-6-proj-6")
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -985,7 +994,7 @@ func TestCloneModeRelocation(t *testing.T) {
 			t.Fatalf("%v after relocation: %v\n%s", args, err, out)
 		}
 	}
-	if out, err := gwRun(t, bin, newDir, env, "done", newDir, "--non-interactive", "--delete-remote", "--force"); err != nil {
+	if out, err := gwRun(t, bin, home, env, "done", newDir, "--non-interactive", "--delete-remote", "--force"); err != nil {
 		t.Fatalf("done after relocation: %v\n%s", err, out)
 	}
 }

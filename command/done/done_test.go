@@ -249,6 +249,39 @@ func TestDoneRemovesCleanFolder(t *testing.T) {
 	}
 }
 
+// TestDoneRefusesFromInsideWorkFolder: the folder is removed, so running from
+// inside it is a usage error before any checks or teardown, on every platform.
+func TestDoneRefusesFromInsideWorkFolder(t *testing.T) {
+	workDir := writeWorkFolder(t)
+	t.Chdir(workDir)
+
+	err := run([]string{workDir, "--non-interactive"})
+	if err == nil || !cli.IsUsage(err) || !strings.Contains(err.Error(), "refusing to tear down") {
+		t.Fatalf("run from inside = %v; want a usage refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workDir, ".git-work.yaml")); statErr != nil {
+		t.Fatalf("refusal removed the work folder: %v", statErr)
+	}
+}
+
+// TestDoneFromOutsideWorkFolderSucceeds is the intentional counterpart: the
+// supported invocation, from the parent directory, still removes the folder.
+func TestDoneFromOutsideWorkFolderSucceeds(t *testing.T) {
+	workDir := writeWorkFolder(t)
+	t.Chdir(filepath.Dir(workDir))
+
+	var err error
+	_ = captureStdout(t, func() {
+		err = run([]string{workDir, "--non-interactive"})
+	})
+	if err != nil {
+		t.Fatalf("run from outside: %v", err)
+	}
+	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+		t.Fatalf("work folder still present after run from outside: %v", statErr)
+	}
+}
+
 func TestDoneRefusesAgentWorktreesWithoutForce(t *testing.T) {
 	workDir := writeWorkFolder(t)
 	agent := filepath.Join(workDir, layout.WorktreesDirName, "agent-x", "api")
