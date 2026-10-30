@@ -3,6 +3,7 @@ package integrate
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,10 +157,12 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 		}
 	}
 
+	sections := cli.NewSections(os.Stdout)
 	if o.dryRun {
 		for _, t := range targets {
-			if t.report("would integrate") && o.push {
-				fmt.Printf("%s: would push %s to origin\n", t.r.Name, t.defBranch)
+			sections.Begin()
+			if t.report(sections, "would integrate") && o.push {
+				fmt.Fprintf(sections, "%s: would push %s to origin\n", t.r.Name, t.defBranch)
 			}
 		}
 	}
@@ -173,14 +176,15 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 
 	// Transfer: only now, with the whole set proven safe, cherry-pick.
 	for _, t := range targets {
-		if !t.report("integrating") {
+		sections.Begin()
+		if !t.report(sections, "integrating") {
 			// A resumed conflict resolution already advanced the local default
 			// branch, so --push still has something to publish.
 			if t.resumed && o.push {
 				if err := repo.PushBranch(t.repoDir, t.defBranch); err != nil {
 					return fmt.Errorf("%s: push %s: %v", t.r.Name, t.defBranch, err)
 				}
-				fmt.Printf("%s: pushed %s to origin\n", t.r.Name, t.defBranch)
+				fmt.Fprintf(sections, "%s: pushed %s to origin\n", t.r.Name, t.defBranch)
 			}
 			continue
 		}
@@ -192,15 +196,15 @@ func integrate(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 			return err
 		}
 		if integrated == 0 {
-			fmt.Printf("%s: already up to date\n", t.r.Name)
+			fmt.Fprintf(sections, "%s: already up to date\n", t.r.Name)
 			continue
 		}
-		fmt.Printf("%s: %d integrated onto %s\n", t.r.Name, integrated, t.defBranch)
+		fmt.Fprintf(sections, "%s: %d integrated onto %s\n", t.r.Name, integrated, t.defBranch)
 		if o.push {
 			if err := repo.PushBranch(t.repoDir, t.defBranch); err != nil {
 				return fmt.Errorf("%s: push %s: %v", t.r.Name, t.defBranch, err)
 			}
-			fmt.Printf("%s: pushed %s to origin\n", t.r.Name, t.defBranch)
+			fmt.Fprintf(sections, "%s: pushed %s to origin\n", t.r.Name, t.defBranch)
 		} else {
 			fmt.Fprintf(os.Stderr, "git-work: %s: warning: local %s is ahead of origin/%s; "+
 				"push it before `git work done` will see %s as merged\n",
@@ -385,13 +389,13 @@ func preflight(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 // report prints the repo's summary line under verb ("would integrate",
 // "integrating") and lists the commits, or says the repo is already up to
 // date. It reports whether there is anything to transfer.
-func (t target) report(verb string) bool {
+func (t target) report(w io.Writer, verb string) bool {
 	if len(t.unintegrated) == 0 {
-		fmt.Printf("%s: already up to date\n", t.r.Name)
+		fmt.Fprintf(w, "%s: already up to date\n", t.r.Name)
 		return false
 	}
-	fmt.Printf("%s: %s %d onto %s (%s)\n", t.r.Name, verb, len(t.unintegrated), t.defBranch, mechanism(t.ff))
-	repo.PrintCommits(os.Stdout, t.unintegrated)
+	fmt.Fprintf(w, "%s: %s %d onto %s (%s)\n", t.r.Name, verb, len(t.unintegrated), t.defBranch, mechanism(t.ff))
+	repo.PrintCommits(w, t.unintegrated)
 	return true
 }
 

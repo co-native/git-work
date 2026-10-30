@@ -167,16 +167,18 @@ func runAll(o *options, in io.Reader, w, errw io.Writer, st *state.State, workDi
 		return err
 	}
 	var failures []string
-	for i, r := range scope {
-		if i > 0 {
-			fmt.Fprintf(w, "\n")
-		}
+	// Only the header and its separator go through Sections; the child's own
+	// output is handed the raw writer so os/exec can pass an *os.File straight
+	// through and git keeps its TTY, color, and pager.
+	sections := cli.NewSections(w)
+	for _, r := range scope {
+		sections.Begin()
 		wt := filepath.Join(workDir, r.Name)
 		if _, err := os.Stat(wt); os.IsNotExist(err) {
 			fmt.Fprintf(errw, "git-work: %s: worktree missing; skipping\n", r.Name)
 			continue
 		}
-		fmt.Fprintf(w, "=== %s ===\n", r.Name)
+		fmt.Fprintf(sections, "=== %s ===\n", r.Name)
 		cmd := exec.Command("git", o.args...)
 		cmd.Dir = wt
 		cmd.Stdin = in

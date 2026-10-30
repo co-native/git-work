@@ -5,6 +5,7 @@ package changes
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +102,9 @@ func changes(o *options, l layout.Layout, st *state.State, workDir string) error
 	problem := func(format string, a ...any) {
 		problems = append(problems, fmt.Sprintf(format, a...))
 	}
+	sections := cli.NewSections(os.Stdout)
 	for _, r := range scope {
+		sections.Begin()
 		wt := filepath.Join(workDir, r.Name)
 		if _, err := os.Stat(wt); os.IsNotExist(err) {
 			problem("%s: checkout is missing", r.Name)
@@ -139,7 +142,7 @@ func changes(o *options, l layout.Layout, st *state.State, workDir string) error
 			problem("%s: could not list commits: %v", r.Name, err)
 			continue
 		}
-		report(r.Name, r.Branch, defBranch, commits)
+		report(sections, r.Name, r.Branch, defBranch, commits)
 	}
 
 	if len(problems) > 0 {
@@ -149,15 +152,15 @@ func changes(o *options, l layout.Layout, st *state.State, workDir string) error
 	return nil
 }
 
-func report(name, branch, defBranch string, commits []repo.Commit) {
+func report(w io.Writer, name, branch, defBranch string, commits []repo.Commit) {
 	if len(commits) == 0 {
-		fmt.Printf("%s: no un-integrated commits on %s not in %s\n", name, branch, defBranch)
+		fmt.Fprintf(w, "%s: no un-integrated commits on %s not in %s\n", name, branch, defBranch)
 		return
 	}
 	word := "commits"
 	if len(commits) == 1 {
 		word = "commit"
 	}
-	fmt.Printf("%s: %d un-integrated %s on %s not in %s\n", name, len(commits), word, branch, defBranch)
-	repo.PrintCommits(os.Stdout, commits)
+	fmt.Fprintf(w, "%s: %d un-integrated %s on %s not in %s\n", name, len(commits), word, branch, defBranch)
+	repo.PrintCommits(w, commits)
 }

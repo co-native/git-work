@@ -140,7 +140,9 @@ func pullPrimaries(w, errw io.Writer, l layout.Layout, names []string) {
 // A failed pull (diverged branch, offline, layout problems) is a warning on
 // errw - it never aborts the refresh.
 func pullRepos(w, errw io.Writer, dirOf func(string) (string, error), recordedOf func(string) string, names []string) {
+	sections := cli.NewSections(w)
 	for _, name := range names {
+		sections.Begin()
 		dir, err := dirOf(name)
 		if err == nil {
 			var res repo.PullResult
@@ -150,7 +152,7 @@ func pullRepos(w, errw io.Writer, dirOf func(string) (string, error), recordedOf
 				res, err = repo.PullDefaultBranch(dir)
 			}
 			if err == nil {
-				fmt.Fprintf(w, "Pulled %s: %s\n", name, res)
+				fmt.Fprintf(sections, "Pulled %s: %s\n", name, res)
 				continue
 			}
 		}

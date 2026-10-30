@@ -164,6 +164,13 @@ descriptor that a conformance test checks against each command's real flag set, 
 cannot fall out of step the way a hand-maintained table here would. This section documents
 the _why_ - the semantics behind the flags - and leaves the _what_ to the tool.
 
+Commands that act on several repos print **one block per repo**, and consecutive blocks
+are separated by a blank line (`cli.Sections`). A repo that prints nothing - skipped with
+a note on stderr, or failed before reaching its report - contributes no block and
+therefore no separator, so a multi-repo run never opens with a stray blank line or
+collects them in front of the error summary. `git work git` adds its `=== <repo> ===`
+header within that block; commands that address a single repo are unaffected.
+
 ### The help contract
 
 git-work once had three different answers to `-h`: some commands printed real usage and

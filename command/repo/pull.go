@@ -52,14 +52,16 @@ func pullAll(w io.Writer, l layout.Layout, names []string) error {
 		return nil
 	}
 	var failed []string
+	sections := cli.NewSections(w)
 	for _, name := range names {
+		sections.Begin()
 		res, err := pullPrimary(l, name)
 		if err != nil {
-			fmt.Fprintf(w, "%s: %v\n", name, err)
+			fmt.Fprintf(sections, "%s: %v\n", name, err)
 			failed = append(failed, name)
 			continue
 		}
-		fmt.Fprintf(w, "%s: %s\n", name, res)
+		fmt.Fprintf(sections, "%s: %s\n", name, res)
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("pull failed for: %s", strings.Join(failed, ", "))

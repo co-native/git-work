@@ -43,7 +43,7 @@ func TestPullAllUpToDateAndFastForward(t *testing.T) {
 	if err := pullAll(&b, l, []string{"alpha", "beta"}); err != nil {
 		t.Fatalf("pullAll: %v", err)
 	}
-	want := "alpha: already up to date\n" +
+	want := "alpha: already up to date\n\n" +
 		"beta: fast-forwarded\n"
 	if got := b.String(); got != want {
 		t.Errorf("output = %q, want %q", got, want)

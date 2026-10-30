@@ -119,7 +119,9 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 	problem := func(format string, a ...any) {
 		problems = append(problems, fmt.Sprintf(format, a...))
 	}
+	sections := cli.NewSections(w)
 	for _, r := range scope {
+		sections.Begin()
 		wt := filepath.Join(workDir, r.Name)
 		if _, err := os.Stat(wt); os.IsNotExist(err) {
 			fmt.Fprintf(errw, "git-work: %s: checkout missing; skipping\n", r.Name)
@@ -158,11 +160,11 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 			if res, err := repo.PullBranchFFOnly(main, target); err != nil {
 				fmt.Fprintf(errw, "git-work: pull %s: %v (rebasing onto the local default branch)\n", r.Name, err)
 			} else {
-				fmt.Fprintf(w, "Pulled %s: %s\n", r.Name, res)
+				fmt.Fprintf(sections, "Pulled %s: %s\n", r.Name, res)
 			}
 		}
 		if o.dryRun {
-			reportRepo(w, r.Name, main, wt, target, problem)
+			reportRepo(sections, r.Name, main, wt, target, problem)
 			continue
 		}
 		status, err := repo.RebaseOnto(wt, target)
@@ -176,7 +178,7 @@ func rebaseAll(o *options, w, errw io.Writer, l layout.Layout, st *state.State, 
 		case repo.RebaseConflict:
 			problem("%s: rebase onto %s hit conflicts; left in progress - run `git rebase --continue` or `git rebase --abort` in %s", r.Name, target, wt)
 		default:
-			fmt.Fprintf(w, "Rebased %s onto %s\n", r.Name, target)
+			fmt.Fprintf(sections, "Rebased %s onto %s\n", r.Name, target)
 		}
 	}
 	if len(problems) > 0 {

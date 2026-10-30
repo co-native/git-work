@@ -166,6 +166,11 @@ func TestChangesAllReportsEmptyRepo(t *testing.T) {
 			t.Errorf("output = %q; want %q", out, want)
 		}
 	}
+	// One repo's block must not run straight into the next: the commit detail
+	// ends alpha's block, then a blank line, then beta's line.
+	if !strings.Contains(out, "feat 0\n\nbeta: no un-integrated commits") {
+		t.Errorf("output = %q; want a blank line between the alpha and beta blocks", out)
+	}
 }
 
 func newLayout(t *testing.T) (layout.Layout, string) {

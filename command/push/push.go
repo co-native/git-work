@@ -3,6 +3,7 @@ package push
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,7 +123,9 @@ func push(o *options, l layout.Layout, st *state.State, workDir string) error {
 	fail := func(format string, a ...any) {
 		failures = append(failures, fmt.Sprintf(format, a...))
 	}
+	sections := cli.NewSections(os.Stdout)
 	for _, r := range scope {
+		sections.Begin()
 		main, err := workfolder.RepoDirFor(l, st, workDir, r.Name)
 		if err != nil {
 			fail("%s: %v", r.Name, err)
@@ -133,9 +136,9 @@ func push(o *options, l layout.Layout, st *state.State, workDir string) error {
 				fail("%s: an integrate conflict is waiting in %s; resolve or abort it first", r.Name, l.IntegrateWorktree(workDir, r.Name))
 				continue
 			}
-			pushDefaultBranch(o, r.Name, main, r.DefaultBranch, fail)
+			pushDefaultBranch(sections, o, r.Name, main, r.DefaultBranch, fail)
 		} else {
-			pushWorkBranch(o, r, main, workDir, fail)
+			pushWorkBranch(sections, o, r, main, workDir, fail)
 		}
 	}
 
@@ -147,7 +150,7 @@ func push(o *options, l layout.Layout, st *state.State, workDir string) error {
 
 // pushWorkBranch pushes one repo's work branch from its worktree - the default
 // mode. fail records a per-repo failure without stopping the run.
-func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(string, ...any)) {
+func pushWorkBranch(w io.Writer, o *options, r state.Repo, main, workDir string, fail func(string, ...any)) {
 	// A gone worktree or a branch that no longer exists locally means
 	// there is nothing to push: skip with a note rather than failing.
 	wt := filepath.Join(workDir, r.Name)
@@ -248,10 +251,10 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 		forceNote = " (force-with-lease)"
 	}
 	if len(commits) == 0 {
-		fmt.Printf("%s: %s empty branch %s to origin%s\n", r.Name, verb, r.Branch, forceNote)
+		fmt.Fprintf(w, "%s: %s empty branch %s to origin%s\n", r.Name, verb, r.Branch, forceNote)
 	} else {
-		fmt.Printf("%s: %s %d commit(s) to origin/%s%s\n", r.Name, verb, len(commits), r.Branch, forceNote)
-		repo.PrintCommits(os.Stdout, commits)
+		fmt.Fprintf(w, "%s: %s %d commit(s) to origin/%s%s\n", r.Name, verb, len(commits), r.Branch, forceNote)
+		repo.PrintCommits(w, commits)
 	}
 	if o.dryRun {
 		return
@@ -265,7 +268,7 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 		}
 		return
 	}
-	fmt.Printf("%s: pushed %s to origin\n", r.Name, r.Branch)
+	fmt.Fprintf(w, "%s: pushed %s to origin\n", r.Name, r.Branch)
 }
 
 // pushDefaultBranch pushes one repo's local default branch from its primary
@@ -275,7 +278,7 @@ func pushWorkBranch(o *options, r state.Repo, main, workDir string, fail func(st
 // worktree or an already-integrated (and therefore "empty") work branch must not
 // stop the default branch from reaching origin. parseFlags rejects -f with
 // --main, so this never force-pushes.
-func pushDefaultBranch(o *options, name, main, recorded string, fail func(string, ...any)) {
+func pushDefaultBranch(w io.Writer, o *options, name, main, recorded string, fail func(string, ...any)) {
 	defBranch, err := repo.DefaultBranchFor(main, recorded)
 	if err != nil {
 		fail("%s: could not determine default branch: %v", name, err)
@@ -311,12 +314,12 @@ func pushDefaultBranch(o *options, name, main, recorded string, fail func(string
 	}
 	switch {
 	case !hasRemote:
-		fmt.Printf("%s: %s new branch %s to origin\n", name, verb, defBranch)
+		fmt.Fprintf(w, "%s: %s new branch %s to origin\n", name, verb, defBranch)
 	case len(ahead) == 0:
-		fmt.Printf("%s: %s %s to origin (already up to date)\n", name, verb, defBranch)
+		fmt.Fprintf(w, "%s: %s %s to origin (already up to date)\n", name, verb, defBranch)
 	default:
-		fmt.Printf("%s: %s %d commit(s) to origin/%s\n", name, verb, len(ahead), defBranch)
-		repo.PrintCommits(os.Stdout, ahead)
+		fmt.Fprintf(w, "%s: %s %d commit(s) to origin/%s\n", name, verb, len(ahead), defBranch)
+		repo.PrintCommits(w, ahead)
 	}
 	if o.dryRun {
 		return
@@ -330,5 +333,5 @@ func pushDefaultBranch(o *options, name, main, recorded string, fail func(string
 		}
 		return
 	}
-	fmt.Printf("%s: pushed %s to origin\n", name, defBranch)
+	fmt.Fprintf(w, "%s: pushed %s to origin\n", name, defBranch)
 }

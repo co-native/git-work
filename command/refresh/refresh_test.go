@@ -151,7 +151,7 @@ func TestPullPrimariesReportsAndNeverAborts(t *testing.T) {
 	// "missing" has no primary clone: reported on errw, loop continues.
 	pullPrimaries(&out, &errw, l, []string{"alpha", "missing", "beta"})
 
-	want := "Pulled alpha: already up to date\n" +
+	want := "Pulled alpha: already up to date\n\n" +
 		"Pulled beta: fast-forwarded\n"
 	if got := out.String(); got != want {
 		t.Errorf("stdout = %q, want %q", got, want)
