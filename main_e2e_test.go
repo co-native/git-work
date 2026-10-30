@@ -98,6 +98,84 @@ func TestCloneNewDone(t *testing.T) {
 	}
 }
 
+func TestChangesCommand(t *testing.T) {
+	bin, home, _, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	if out, err := gwRun(t, bin, home, env,
+		"new", "PROJ-1", "--repos", "alpha", "--branch", "PROJ-1-work", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+
+	workDir := filepath.Join(workRoot, "PROJ-1-proj-1")
+	checkout := filepath.Join(workDir, "alpha")
+	sh(t, checkout, "git", "config", "user.email", "t@t.t")
+	sh(t, checkout, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(checkout, "feature.txt"), []byte("feature\n"), 0o644)
+	sh(t, checkout, "git", "add", "feature.txt")
+	sh(t, checkout, "git", "commit", "-qm", "feature work")
+
+	out, err := gwRun(t, bin, workDir, env, "changes", "alpha")
+	if err != nil {
+		t.Fatalf("changes alpha: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"alpha: 1 un-integrated commit on PROJ-1-work not in main",
+		"feature work",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("changes output = %q; want %q", out, want)
+		}
+	}
+
+	out, err = gwRun(t, bin, workDir, env, "changes", "--all")
+	if err != nil || !strings.Contains(out, "feature work") {
+		t.Errorf("changes --all = %v; output:\n%s", err, out)
+	}
+}
+
+func TestChangesCommandCloneMode(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	alphaOrigin := makeOriginIn(t, home, "alpha")
+	betaOrigin := makeOriginIn(t, home, "beta")
+	writeCloneModeConfig(t, home, reposRoot, workRoot,
+		map[string]string{"alpha": alphaOrigin, "beta": betaOrigin})
+	if out, err := gwRun(t, bin, home, env,
+		"new", "PROJ-1", "--repos", "alpha,beta", "--branch", "PROJ-1-work", "--non-interactive"); err != nil {
+		t.Fatalf("new: %v\n%s", err, out)
+	}
+
+	checkout := filepath.Join(workRoot, "PROJ-1-proj-1", "alpha")
+	sh(t, checkout, "git", "config", "user.email", "t@t.t")
+	sh(t, checkout, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(checkout, "feature.txt"), []byte("feature\n"), 0o644)
+	sh(t, checkout, "git", "add", "feature.txt")
+	sh(t, checkout, "git", "commit", "-qm", "feature work")
+
+	out, err := gwRun(t, bin, checkout, env, "changes", "alpha")
+	if err != nil {
+		t.Fatalf("changes in clone mode: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "alpha: 1 un-integrated commit on PROJ-1-work not in main") {
+		t.Errorf("changes output = %q", out)
+	}
+
+	out, err = gwRun(t, bin, checkout, env, "changes", "--all")
+	if err != nil {
+		t.Fatalf("changes --all in clone mode: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"alpha: 1 un-integrated commit on PROJ-1-work not in main",
+		"beta: no un-integrated commits on PROJ-1-work not in main",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("changes --all output = %q; want %q", out, want)
+		}
+	}
+}
+
 // newTestEnv builds the binary and a config pointing at temp repos/work roots.
 func newTestEnv(t *testing.T) (bin, home, reposRoot, workRoot string, env []string) {
 	t.Helper()

@@ -84,6 +84,7 @@ git work new --no-ticket spike-harness --repos api
 
 # 3. Work in it. From inside the folder:
 git work git -a -- status          # run any git command in every repo
+git work changes -a                # list commits not yet in each default branch
 git work rebase -a                 # rebase every work branch onto its default branch
 git work add                       # bring another repo into this unit of work
 git work refresh                   # pull the primaries, re-render the generated files

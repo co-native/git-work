@@ -146,6 +146,7 @@ commands:
   add                               add another repo to the current work folder
   adopt <dir>                       register an existing checkout dir in the current work folder
   refresh                           freshen the ticket repos' defaults, re-render generated files
+  changes <repo> | --all            list a work branch's un-integrated commits
   rebase <repo> | --all             freshen the defaults, rebase work branches onto them
   push <repo> | --all               push work branches with unpushed commits to origin
   integrate <repo> | --all          move a work branch's un-integrated commits onto its default branch
@@ -331,6 +332,19 @@ offline, or layout problems, is a warning, never an abort), then re-renders the 
 blocks of `TICKET.md`, `README.md`, and the instructions file from current state -
 re-fetching provider details for the title/description (keeps the existing title if the
 fetch fails). Ticketless work folders skip the provider fetch and `TICKET.md`.
+
+### `changes <repo> | --all`
+
+Run from inside a work folder. Scope is one repo (`<repo>`) or every repo in the work
+folder (`-a`/`--all`); bare `changes` is a usage error, consistent with the other
+branch-scoped commands. It lists the work branch commits whose patches are not in the
+repo's local default branch, oldest first (short SHA plus subject). The patch-equivalence
+check excludes content already integrated by a squash or cherry-pick, so the result is the
+same un-integrated-commit set that `integrate` uses.
+
+The command does not fetch or change refs. Run `refresh` first when the local default
+branch must include remote changes. Each repo is checked independently, and all problems
+are reported before it exits nonzero.
 
 ### `rebase <repo> | --all [flags]`
 

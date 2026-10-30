@@ -21,7 +21,7 @@ import (
 var paths = [][]string{
 	{"repos"}, {"repo"},
 	{"repos", "clone"}, {"repos", "adopt"}, {"repos", "list"}, {"repos", "pull"},
-	{"clone"}, {"new"}, {"add"}, {"adopt"}, {"refresh"},
+	{"clone"}, {"new"}, {"add"}, {"adopt"}, {"refresh"}, {"changes"},
 	{"rebase"}, {"push"}, {"integrate"}, {"git"}, {"done"}, {"rm"},
 	{"config"},
 	{"config", "list"}, {"config", "get"}, {"config", "set"},

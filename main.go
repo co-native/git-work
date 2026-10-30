@@ -6,6 +6,7 @@ import (
 
 	"github.com/co-native/git-work/command/add"
 	"github.com/co-native/git-work/command/adopt"
+	"github.com/co-native/git-work/command/changes"
 	configcmd "github.com/co-native/git-work/command/config"
 	"github.com/co-native/git-work/command/done"
 	"github.com/co-native/git-work/command/gitcmd"
@@ -38,6 +39,7 @@ var commands = []entry{
 	{add.Cmd, add.Run},
 	{adopt.Cmd, adopt.Run},
 	{refresh.Cmd, refresh.Run},
+	{changes.Cmd, changes.Run},
 	{rebase.Cmd, rebase.Run},
 	{push.Cmd, push.Run},
 	{integrate.Cmd, integrate.Run},
