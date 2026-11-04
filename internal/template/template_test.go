@@ -429,16 +429,20 @@ func TestWriteWorkFolderMigrates(t *testing.T) {
 }
 
 // Both instructions names are generated files, so `done` may delete a folder
-// written under either setting without --remove-all.
+// written under either setting without --remove-all. The workspace file is one
+// too, named after the folder.
 func TestGeneratedFilesCoverBothInstructionsNames(t *testing.T) {
 	have := map[string]bool{}
-	for _, f := range GeneratedFiles {
+	for _, f := range GeneratedFiles(filepath.Join("work", "PROJ-1-thing")) {
 		have[f] = true
 	}
 	for _, f := range config.InstructionsFiles {
 		if !have[f] {
 			t.Errorf("GeneratedFiles lacks %s", f)
 		}
+	}
+	if !have["PROJ-1-thing.code-workspace"] {
+		t.Errorf("GeneratedFiles lacks the workspace file, have %v", have)
 	}
 }
 

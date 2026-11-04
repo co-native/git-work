@@ -32,10 +32,11 @@ var Cmd = &cli.Command{
 	Synopsis: []string{"git work add [options]"},
 	Long: "Run from inside a work folder. Adds one or more repos - a checkout plus its\n" +
 		"branch per repo - to the current ticket, then re-aggregates the generated\n" +
-		"README.md and instructions file blocks. Branch resolution matches `new`: the\n" +
-		"folder's work branch is used, existing branches for the ticket, local or on\n" +
-		"origin, are offered for reuse, and --branch names the branch outright instead.\n" +
-		"Added checkouts are rolled back if a later repo fails.",
+		"README.md and instructions file blocks and adds the repos to the VS Code\n" +
+		"workspace file. Branch resolution matches `new`: the folder's work branch is\n" +
+		"used, existing branches for the ticket, local or on origin, are offered for\n" +
+		"reuse, and --branch names the branch outright instead. Added checkouts are\n" +
+		"rolled back if a later repo fails.",
 	Examples: []string{
 		"git work add --repos web",
 		"git work add --repos api --branch feature/PROJ-123 --non-interactive",

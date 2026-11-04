@@ -36,10 +36,11 @@ var Cmd = &cli.Command{
 	Synopsis: []string{"git work rm <repo> [options]"},
 	Long: "Removes one repo from the work folder you are in: the same safety checks and\n" +
 		"teardown as done, scoped to <repo>, then the README and instructions file\n" +
-		"managed blocks are re-rendered from the repos that remain. <repo> must already\n" +
-		"be listed in .git-work.yaml. Everything else - other repos, TICKET.md, the state\n" +
-		"file - is left alone, and rm never removes the folder: removing the last repo\n" +
-		"leaves an accurate zero-repo work folder.",
+		"managed blocks and the VS Code workspace file's folder list are re-rendered\n" +
+		"from the repos that remain. <repo> must already be listed in .git-work.yaml.\n" +
+		"Everything else - other repos, TICKET.md, the state file - is left alone, and rm\n" +
+		"never removes the folder: removing the last repo leaves an accurate zero-repo\n" +
+		"work folder.",
 	Examples: []string{
 		"git work rm alpha --delete-local --delete-remote",
 		"git work rm alpha --non-interactive --force",

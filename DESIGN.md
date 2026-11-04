@@ -17,18 +17,18 @@ tree. It installs as `git-work` on `PATH` so git dispatches it as `git work <com
 Each command package owns its own flag parsing. Shared building blocks live under
 `internal/`:
 
-| Package      | Responsibility                                                                                                                                                                                                                                                                                                                                         |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; the repo URL registry; dot-path key access (in `command/config`).                                                                                                                                                                                                                  |
-| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): checkout mode, per-repo default branches, read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                        |
-| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                                                             |
-| `workfolder` | The preamble of every command run inside a work folder (`Load`: state from the cwd, config, resolved layout), the mode-aware `RepoDir`, the `.worktrees` cwd guard, and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                       |
-| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`), the checkout mode type, and the reserved `.worktrees` paths. The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                              |
-| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, remote branch probing, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`), the integrate temp-worktree marker, LFS setup, and the shared worktree/state branch check (`WorktreeBranchProblem`). |
-| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                                                               |
-| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the mode-aware embedded work folder contract, the operator overlay, and the repos-root/config-dir per-repo overlays; `WriteWorkFolder` is the one place the set of generated files is assembled.                                             |
-| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                                                              |
-| `teardown`   | Mode-aware per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), the `.worktrees` leftover scan, shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                     |
+| Package      | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `config`     | Load/save the global config (YAML, or JSON by extension); defaults; the repo URL registry; dot-path key access (in `command/config`).                                                                                                                                                                                                                                                                                    |
+| `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): checkout mode, per-repo default branches, read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                                                                                          |
+| `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                                                                                                                               |
+| `workfolder` | The preamble of every command run inside a work folder (`Load`: state from the cwd, config, resolved layout), the mode-aware `RepoDir`, the `.worktrees` cwd guard, and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                                                                                         |
+| `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`), the checkout mode type, and the reserved `.worktrees` paths. The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                                                                                |
+| `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, remote branch probing, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`), the integrate temp-worktree marker, LFS setup, and the shared worktree/state branch check (`WorktreeBranchProblem`).                                                                   |
+| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                                                                                                                                 |
+| `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the mode-aware embedded work folder contract, the operator overlay, and the repos-root/config-dir per-repo overlays; the `folders` list of the VS Code workspace file, spliced into whatever the operator keeps in the rest of it; `WriteWorkFolder` is the one place the set of generated files is assembled. |
+| `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                                                                                                                                |
+| `teardown`   | Mode-aware per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), the `.worktrees` leftover scan, shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                                                                                       |
 
 ## Checkout modes
 
@@ -294,11 +294,12 @@ folder is created, so a refusal reports all repos in one run and creates nothing
 ### `add [flags]`
 
 Run from inside a work folder (located via `FindUp`). Adds one or more repos - new
-checkouts + branches - to the current ticket and re-aggregates the generated `README.md`
-and instructions file. The folder's work branch is the default for each added repo and
-`--branch` overrides it for the repos being added (recorded per repo in `repos[].branch`);
-existing branches are handled by [Branch resolution](#branch-resolution), resolved for
-every repo before the first worktree is added.
+checkouts + branches - to the current ticket and re-aggregates the generated `README.md`,
+the instructions file, and the workspace file's folder list. The folder's work branch is
+the default for each added repo and `--branch` overrides it for the repos being added
+(recorded per repo in `repos[].branch`); existing branches are handled by
+[Branch resolution](#branch-resolution), resolved for every repo before the first worktree
+is added.
 
 ### `adopt <dir>`
 
@@ -336,9 +337,10 @@ default branch in its primary clone; in clone mode it fetches and fast-forwards 
 clone's local default ref. Then it re-renders (explicitly, so a primary left on another
 branch still freshens the default branch; a failed pull, e.g. a diverged branch, being
 offline, or layout problems, is a warning, never an abort), then re-renders the managed
-blocks of `TICKET.md`, `README.md`, and the instructions file from current state -
-re-fetching provider details for the title/description (keeps the existing title if the
-fetch fails). Ticketless work folders skip the provider fetch and `TICKET.md`.
+blocks of `TICKET.md`, `README.md`, and the instructions file and the workspace file's
+folder list from current state - re-fetching provider details for the title/description
+(keeps the existing title if the fetch fails). Ticketless work folders skip the provider
+fetch and `TICKET.md`.
 
 ### `changes <repo> | --all`
 
@@ -654,11 +656,12 @@ inside a work folder (located via `state.FindUp`); `<repo>` must already be in
 `.git-work.yaml` or the command errors. Runs the same `teardown.CheckRepo` safety checks
 and `teardown.TeardownRepo` teardown as `done` (uncommitted/unpushed/merged-or-contained,
 `--force` to override, checkout-then-branch order), scoped to just that repo, then
-re-aggregates the `README.md` and instructions file managed blocks from the repos that
-remain. The rest of the work folder - other repos, `TICKET.md`, the state file itself - is
-left untouched; `rm` never removes the folder. Removing the last repo leaves an accurate
-zero-repo `.git-work.yaml` and regenerated `TICKET.md`, `README.md` and instructions file
-rather than an invisible or half-deleted folder.
+re-aggregates the `README.md` and instructions file managed blocks and the workspace
+file's folder list from the repos that remain. The rest of the work folder - other repos,
+`TICKET.md`, the state file itself - is left untouched; `rm` never removes the folder.
+Removing the last repo leaves an accurate zero-repo `.git-work.yaml` and regenerated
+`TICKET.md`, `README.md` and instructions file rather than an invisible or half-deleted
+folder.
 
 ### `config <subcommand>`
 
@@ -888,6 +891,7 @@ Work folders hold one worktree per repo plus generated files:
 ├── TICKET.md       # generated: ticket id, title, description
 ├── README.md       # generated: ticket, branch, repo list
 ├── AGENTS.md       # generated: embedded contract + operator overlay + repo overlays
+├── <folder>.code-workspace # generated: workspace folders, operator settings kept
 ├── <repoA>/        # worktree (absolute path) on the work branch
 └── <repoB>/
 ```
@@ -904,6 +908,7 @@ Clone-mode work folders have no primary tree. Each repo is a full clone, and the
 ├── TICKET.md
 ├── README.md
 ├── AGENTS.md
+├── <folder>.code-workspace
 ├── .worktrees/               # reserved
 │   ├── integrate-<repo>/     # transient, git-work-owned
 │   └── agent-<agent>/        # subagent worktrees
@@ -952,8 +957,9 @@ cannot silently retarget in-flight work.
 
 `new`/`add`/`refresh` write **managed blocks** into `TICKET.md`, `README.md`, and the
 instructions file via `template.WriteManaged`, so hand edits outside the managed region
-survive a re-render. `done` treats these files plus the two state file names as its own
-and may delete them; any other file blocks folder removal unless `--remove-all` is given.
+survive a re-render. `done` treats these files, the VS Code workspace file, plus the two
+state file names as its own and may delete them; any other file blocks folder removal
+unless `--remove-all` is given.
 
 The instructions file is the one a coding agent reads at the work folder root. Its name is
 `instructions_file` in the config: `AGENTS.md` by default, or `CLAUDE.md`. Claude Code
@@ -1005,6 +1011,24 @@ comment (an installer's "generated from" marker) is dropped: Claude Code documen
 strips block comments from `CLAUDE.md`, but not from `AGENTS.md`, and other agents make no
 such promise. The rest is inlined verbatim. Because the content is copied into each
 folder, editing an overlay takes effect in existing folders only after `git work refresh`.
+
+### The VS Code workspace file
+
+`new`/`add`/`rm`/`refresh` also write `<folder>.code-workspace` at the work folder root,
+named after the folder so VS Code titles its window after it. It lists the work folder
+root as `.` and then one entry per repo checkout, in state order, which matches
+`README.md`'s list. The root entry keeps `README.md`, the instructions file and
+`.scratch/` reachable as a tree in the same window.
+
+Only the top-level `folders` key is git-work's, and it is deliberately not a managed
+block. A workspace file is JSONC, whose comments sit outside any marker scheme, and its
+other keys - editor settings, extension recommendations, tasks - are the operator's rather
+than the tool's. A re-render therefore splices a new `folders` value into the existing
+file and leaves every other byte alone, comments and indentation included; a file without
+the key yet gets one inserted after the opening brace. A file that is not one well-formed
+top-level object is refused with an error naming the file and a remedy, because rewriting
+it would discard work in progress. The file is in `template.GeneratedFiles`, so `done`
+deletes it with the rest.
 
 ## Branch resolution
 

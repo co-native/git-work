@@ -13,6 +13,7 @@ import (
 	"github.com/co-native/git-work/internal/cli/clitest"
 	"github.com/co-native/git-work/internal/layout"
 	"github.com/co-native/git-work/internal/state"
+	"github.com/co-native/git-work/internal/template"
 )
 
 // Help is intercepted by Run before parseFlags, so the descriptor and the
@@ -102,7 +103,9 @@ func TestRunUsageExitCode(t *testing.T) {
 
 func TestExtraFiles(t *testing.T) {
 	dir := t.TempDir()
-	for _, f := range []string{".git-work.yaml", ".git-work.yaml.tmp", "TICKET.md", "README.md", "AGENTS.md", "CLAUDE.md"} {
+	generated := []string{".git-work.yaml", ".git-work.yaml.tmp", "TICKET.md", "README.md", "AGENTS.md", "CLAUDE.md"}
+	// The workspace file is named after the folder, so it is derived from dir.
+	for _, f := range append(generated, template.WorkspaceFile(dir)) {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}

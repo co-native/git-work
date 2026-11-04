@@ -22,8 +22,17 @@ const (
 // GeneratedFiles lists every file git-work generates at a work folder's root:
 // the set `done` may delete without --remove-all. Both instructions file names
 // are in the set, because a folder written under one `instructions_file`
-// setting keeps that name until the next re-render migrates it.
-var GeneratedFiles = []string{TicketFile, ReadmeFile, config.InstructionsAgents, config.InstructionsClaude}
+// setting keeps that name until the next re-render migrates it. The workspace
+// file is named after the folder, so it is derived from workDir.
+func GeneratedFiles(workDir string) []string {
+	return []string{
+		TicketFile,
+		ReadmeFile,
+		config.InstructionsAgents,
+		config.InstructionsClaude,
+		WorkspaceFile(workDir),
+	}
+}
 
 // TicketDetails is what WriteWorkFolder renders TICKET.md from. Title, when
 // set, also replaces st.Title in the other generated files, so a freshly
@@ -48,9 +57,9 @@ type WorkFolderOptions struct {
 }
 
 // WriteWorkFolder renders the work folder's generated files from st: the
-// README.md and instructions file managed blocks always, and TICKET.md when
-// ticket is given and the folder has a ticket (a ticketless folder never gets
-// one).
+// README.md and instructions file managed blocks always, the folders list of the
+// VS Code workspace file, and TICKET.md when ticket is given and the folder has a
+// ticket (a ticketless folder never gets one).
 func WriteWorkFolder(workDir string, opts WorkFolderOptions, st *state.State, ticket *TicketDetails) error {
 	title := st.Title
 	if ticket != nil && ticket.Title != "" {
@@ -101,7 +110,10 @@ func WriteWorkFolder(workDir string, opts WorkFolderOptions, st *state.State, ti
 	if err != nil {
 		return err
 	}
-	return WriteManaged(filepath.Join(workDir, file), block)
+	if err := WriteManaged(filepath.Join(workDir, file), block); err != nil {
+		return err
+	}
+	return WriteWorkspace(workDir, st)
 }
 
 // MigrateInstructions moves a generated instructions file that workDir holds

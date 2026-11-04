@@ -29,9 +29,10 @@ var Cmd = &cli.Command{
 		"branch in its primary clone - explicitly, so a primary left on another branch\n" +
 		"still freshens it, and a failed pull is a warning rather than an abort - then\n" +
 		"re-renders the managed blocks of TICKET.md, README.md and the instructions\n" +
-		"file (AGENTS.md, or CLAUDE.md per `config instructions_file`) from\n" +
-		"current state, re-fetching the provider's title and description (the existing\n" +
-		"title is kept if that fetch fails). Ticketless folders skip both.",
+		"file (AGENTS.md, or CLAUDE.md per `config instructions_file`) and the VS Code\n" +
+		"workspace file's folder list from current state, re-fetching the provider's\n" +
+		"title and description (the existing title is kept if that fetch fails).\n" +
+		"Ticketless folders skip both.",
 	Examples: []string{"git work refresh --no-pull"},
 	Flags: []cli.Flag{
 		{Long: "no-pull", Desc: "skip pulling the ticket repos' primary clones"},

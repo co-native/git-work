@@ -339,18 +339,18 @@ const (
 
 // generatedNames are files done may delete without --remove-all: the state
 // files (including the atomic-save temp a crashed Save may leave) plus the
-// files new/refresh generate at the work-folder root.
-var generatedNames = func() map[string]bool {
+// files new/add/rm/refresh generate at the work-folder root.
+func generatedNames(workDir string) map[string]bool {
 	names := map[string]bool{
 		state.FileName:          true,
 		state.FileName + ".tmp": true,
 		state.JSONFileName:      true,
 	}
-	for _, f := range template.GeneratedFiles {
+	for _, f := range template.GeneratedFiles(workDir) {
 		names[f] = true
 	}
 	return names
-}()
+}
 
 // extraFiles returns the workDir-relative paths of files at the work-folder
 // root that done did not generate. It skips the repo worktree directories
@@ -364,6 +364,7 @@ func extraFiles(workDir string, st *state.State) ([]string, error) {
 	for _, r := range st.Repos {
 		worktrees[r.Name] = true
 	}
+	generated := generatedNames(workDir)
 	var extra []string
 	err := filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -388,7 +389,7 @@ func extraFiles(workDir string, st *state.State) ([]string, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.ContainsRune(rel, filepath.Separator) && generatedNames[rel] {
+		if !strings.ContainsRune(rel, filepath.Separator) && generated[rel] {
 			return nil
 		}
 		extra = append(extra, rel)

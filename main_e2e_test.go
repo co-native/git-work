@@ -377,6 +377,35 @@ func TestRefreshAndAdd(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workDir, "beta")); err != nil {
 		t.Errorf("beta worktree missing after add: %v", err)
 	}
+
+	// The VS Code workspace file is named after the work folder and follows the
+	// repo set.
+	wsPath := filepath.Join(workDir, "PROJ-2-proj-2.code-workspace")
+	ws, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatalf("workspace file missing after add: %v", err)
+	}
+	for _, want := range []string{`"path": "."`, `"path": "alpha"`, `"path": "beta"`} {
+		if !strings.Contains(string(ws), want) {
+			t.Errorf("workspace file missing %s after add:\n%s", want, ws)
+		}
+	}
+
+	// Only the folders key is git-work's, so a refresh rewrites it and keeps
+	// everything the operator put in the file.
+	if err := os.WriteFile(wsPath, []byte("{\n  \"folders\": [],\n  \"settings\": { \"editor.tabSize\": 4 }\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw(workDir, "refresh", "--no-pull")
+	ws, err = os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"editor.tabSize": 4`, `"path": "beta"`} {
+		if !strings.Contains(string(ws), want) {
+			t.Errorf("refresh should rewrite folders and keep %s:\n%s", want, ws)
+		}
+	}
 }
 
 func TestAddReusesExistingBranch(t *testing.T) {
