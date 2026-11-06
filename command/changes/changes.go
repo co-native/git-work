@@ -18,8 +18,9 @@ import (
 )
 
 type options struct {
-	repo string
-	all  bool
+	repo   string
+	all    bool
+	behind bool
 }
 
 // Cmd describes `git work changes` for the help system. main.go builds its
@@ -36,10 +37,16 @@ var Cmd = &cli.Command{
 	Long: "Lists the commits whose patches are on each in-scope work branch but not in\n" +
 		"that repo's local default branch. The report uses the same patch-equivalence\n" +
 		"rule as `integrate`, so commits already integrated by a squash or cherry-pick\n" +
-		"are not listed. It does not fetch or change refs; run `git work refresh` first\n" +
-		"when the local default branch must include remote changes. Scope is mandatory.",
+		"are not listed. -b/--behind adds the opposite list: the commits the local\n" +
+		"default branch has that the work branch does not have as history, which is\n" +
+		"what `git work rebase` would replay onto. It counts commits, not content, so\n" +
+		"a squashed integration shows up there. It does not fetch or change refs; run\n" +
+		"`git work refresh` first when the local default branch must include remote\n" +
+		"changes - with --behind that freshness is the whole answer. Scope is\n" +
+		"mandatory.",
 	Flags: []cli.Flag{
 		{Short: "a", Long: "all", Desc: "list changes for every repo in the work folder"},
+		{Short: "b", Long: "behind", Desc: "also list commits on the default branch not on the branch"},
 	},
 }
 
@@ -50,6 +57,8 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs := cli.NewFlagSet("changes")
 	fs.BoolVar(&o.all, "all", false, "list changes for every repo in the work folder")
 	fs.BoolVar(&o.all, "a", false, "shorthand for --all")
+	fs.BoolVar(&o.behind, "behind", false, "also list commits on the default branch not on the branch")
+	fs.BoolVar(&o.behind, "b", false, "shorthand for --behind")
 	return fs
 }
 
@@ -143,6 +152,17 @@ func changes(o *options, l layout.Layout, st *state.State, workDir string) error
 			continue
 		}
 		report(sections, r.Name, r.Branch, defBranch, commits)
+		if !o.behind {
+			continue
+		}
+		// The other direction asks a different question, so it takes a
+		// different rule: ancestry, not patch equivalence. See reportBehind.
+		lagging, err := repo.CommitsAhead(main, defBranch, r.Branch)
+		if err != nil {
+			problem("%s: could not list commits in %s: %v", r.Name, defBranch, err)
+			continue
+		}
+		reportBehind(sections, r.Name, r.Branch, defBranch, lagging)
 	}
 
 	if len(problems) > 0 {
@@ -157,10 +177,34 @@ func report(w io.Writer, name, branch, defBranch string, commits []repo.Commit) 
 		fmt.Fprintf(w, "%s: no un-integrated commits on %s not in %s\n", name, branch, defBranch)
 		return
 	}
-	word := "commits"
-	if len(commits) == 1 {
-		word = "commit"
-	}
-	fmt.Fprintf(w, "%s: %d un-integrated %s on %s not in %s\n", name, len(commits), word, branch, defBranch)
+	fmt.Fprintf(w, "%s: %d un-integrated %s on %s not in %s\n",
+		name, len(commits), commitWord(len(commits)), branch, defBranch)
 	repo.PrintCommits(w, commits)
+}
+
+// reportBehind prints the list report() does not: the commits the default
+// branch has that the work branch does not.
+//
+// It deliberately uses plain ancestry where report() uses patch equivalence.
+// Ancestry answers "what would `git work rebase` replay onto" and agrees with
+// `git status`'s notion of being behind. Patch equivalence would answer a
+// different question - whether the content is already present - and would hide
+// commits whose content arrived by another route, which is not what a reader
+// checking their branch's freshness wants to be told.
+func reportBehind(w io.Writer, name, branch, defBranch string, commits []repo.Commit) {
+	if len(commits) == 0 {
+		fmt.Fprintf(w, "%s: no commits in %s not on %s\n", name, defBranch, branch)
+		return
+	}
+	fmt.Fprintf(w, "%s: %d %s in %s not on %s\n",
+		name, len(commits), commitWord(len(commits)), defBranch, branch)
+	repo.PrintCommits(w, commits)
+}
+
+// commitWord is the counted noun both reports use.
+func commitWord(n int) string {
+	if n == 1 {
+		return "commit"
+	}
+	return "commits"
 }

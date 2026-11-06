@@ -355,6 +355,24 @@ The command does not fetch or change refs. Run `refresh` first when the local de
 branch must include remote changes. Each repo is checked independently, and all problems
 are reported before it exits nonzero.
 
+`-b`/`--behind` adds the opposite list, per repo and in the same block: the commits the
+local default branch has that the work branch does not have as history, oldest first. The
+flag turns the report into a two-way view of one repo's branch, and the forward list is
+unchanged when it is absent.
+
+The two lists use different rules, on purpose. The forward list asks whether the branch's
+content is in the default branch, so it uses patch equivalence. The behind list asks what
+the default branch has that the branch lacks, so it uses plain ancestry (`git rev-list`):
+the same notion `git status` reports as being behind, and the same set `rebase` replays
+onto. Patch equivalence would hide a commit whose content the branch already holds by
+another route, which is information a reader checking freshness needs. It would not
+suppress a squashed integration either: no commit on the branch is patch-equivalent to the
+squash, so the squash stays listed. That is the intended answer - the branch does not have
+the squash commit as history.
+
+`--behind` is only as accurate as the local default branch, so run `refresh` first when
+freshness is the point of the lookup.
+
 ### `rebase <repo> | --all [flags]`
 
 Run from inside a work folder. Scope is one repo (`<repo>`) or every repo in the work

@@ -36,6 +36,19 @@ func TestParseFlags(t *testing.T) {
 	if one.repo != "alpha" || one.all {
 		t.Errorf("options = %+v; want alpha", one)
 	}
+	if one.behind {
+		t.Errorf("options = %+v; want --behind off by default", one)
+	}
+
+	for _, args := range [][]string{{"alpha", "--behind"}, {"alpha", "-b"}, {"--all", "--behind"}} {
+		o, err := parseFlags(args)
+		if err != nil {
+			t.Fatalf("parseFlags(%v): %v", args, err)
+		}
+		if !o.behind {
+			t.Errorf("parseFlags(%v) = %+v; want behind set", args, o)
+		}
+	}
 }
 
 func TestParseFlagsRejectsInvalidScope(t *testing.T) {
@@ -73,7 +86,7 @@ func TestRunHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run(--help) = %d; want 0", code)
 	}
-	for _, want := range []string{"usage: git work changes", "--all", "-h, --help"} {
+	for _, want := range []string{"usage: git work changes", "--all", "-b, --behind", "-h, --help"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help output = %q; want %q", out, want)
 		}
@@ -171,6 +184,129 @@ func TestChangesAllReportsEmptyRepo(t *testing.T) {
 	if !strings.Contains(out, "feat 0\n\nbeta: no un-integrated commits") {
 		t.Errorf("output = %q; want a blank line between the alpha and beta blocks", out)
 	}
+}
+
+// TestChangesBehindListsCommitsOnDefault covers the plain case: the default
+// branch advanced while the work branch was open, so those commits are the
+// ones a rebase would replay onto.
+func TestChangesBehindListsCommitsOnDefault(t *testing.T) {
+	l, workDir := newLayout(t)
+	setupWorkBranch(t, l, workDir, "alpha", 1)
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, main, "landed.txt", "landed\n", "landed on main")
+	writeCommit(t, main, "more.txt", "more\n", "also landed on main")
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	var changesErr error
+	out := captureStdout(t, func() {
+		changesErr = changes(&options{repo: "alpha", behind: true}, l, st, workDir)
+	})
+	if changesErr != nil {
+		t.Fatalf("changes alpha --behind: %v", changesErr)
+	}
+	for _, want := range []string{
+		"alpha: 2 commits in main not on PROJ-1-work",
+		"landed on main",
+		"also landed on main",
+		"alpha: 1 un-integrated commit on PROJ-1-work not in main",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q; want %q", out, want)
+		}
+	}
+	// The work branch's own commit belongs to the forward block only.
+	if strings.Count(out, "feat 0") != 1 {
+		t.Errorf("output = %q; want feat 0 listed once", out)
+	}
+}
+
+// TestChangesBehindReportsInSync pins the wording of an empty behind list, so a
+// repo whose branch is current reads as such instead of silently dropping the
+// block.
+func TestChangesBehindReportsInSync(t *testing.T) {
+	l, workDir := newLayout(t)
+	setupWorkBranch(t, l, workDir, "alpha", 1)
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	var changesErr error
+	out := captureStdout(t, func() {
+		changesErr = changes(&options{repo: "alpha", behind: true}, l, st, workDir)
+	})
+	if changesErr != nil {
+		t.Fatalf("changes alpha --behind: %v", changesErr)
+	}
+	if !strings.Contains(out, "alpha: no commits in main not on PROJ-1-work") {
+		t.Errorf("output = %q; want an in-sync behind report", out)
+	}
+}
+
+// TestChangesBehindListsSquashedIntegration documents the boundary between the
+// two rules. The forward block uses patch equivalence, so a squash-integrated
+// branch has nothing left to integrate; the behind block uses ancestry, so the
+// squash commit is listed - the branch really does not have that commit as
+// history. This is deliberate, not a bug: see reportBehind.
+func TestChangesBehindListsSquashedIntegration(t *testing.T) {
+	l, workDir := newLayout(t)
+	setupWorkBranch(t, l, workDir, "alpha", 2)
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, main, "merge", "--squash", "PROJ-1-work")
+	runGit(t, main, "commit", "-qm", "squashed work")
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	var changesErr error
+	out := captureStdout(t, func() {
+		changesErr = changes(&options{repo: "alpha", behind: true}, l, st, workDir)
+	})
+	if changesErr != nil {
+		t.Fatalf("changes alpha --behind: %v", changesErr)
+	}
+	if !strings.Contains(out, "alpha: 1 commit in main not on PROJ-1-work") {
+		t.Errorf("output = %q; want the squash commit in the behind list", out)
+	}
+	if !strings.Contains(out, "squashed work") {
+		t.Errorf("output = %q; want the squash commit subject", out)
+	}
+}
+
+// TestChangesWithoutBehindKeepsOutput checks the flag changes nothing when it
+// is absent: the behind list is the only output it may add.
+func TestChangesWithoutBehindKeepsOutput(t *testing.T) {
+	l, workDir := newLayout(t)
+	setupWorkBranch(t, l, workDir, "alpha", 1)
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, main, "landed.txt", "landed\n", "landed on main")
+
+	st := &state.State{Repos: []state.Repo{{Name: "alpha", Branch: "PROJ-1-work"}}}
+	var changesErr error
+	out := captureStdout(t, func() {
+		changesErr = changes(&options{repo: "alpha"}, l, st, workDir)
+	})
+	if changesErr != nil {
+		t.Fatalf("changes alpha: %v", changesErr)
+	}
+	want := "alpha: 1 un-integrated commit on PROJ-1-work not in main\n" +
+		"  " + shortSHA(t, workDir, "alpha", "PROJ-1-work") + " feat 0\n"
+	if out != want {
+		t.Errorf("output = %q; want exactly %q", out, want)
+	}
+}
+
+func shortSHA(t *testing.T, workDir, name, branch string) string {
+	t.Helper()
+	sha := strings.TrimSpace(runGit(t, filepath.Join(workDir, name), "rev-parse", branch))
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 func newLayout(t *testing.T) (layout.Layout, string) {

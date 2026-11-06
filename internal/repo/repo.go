@@ -643,12 +643,17 @@ func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 // patches under new SHAs, and the ref still needs a push to move, so those
 // commits must count. CommitsNotIn answers "is the content in target";
 // CommitsAhead answers "does target's ref need updating".
-func CommitsAhead(mainDir, branch, target string) ([]Commit, error) {
-	out, err := git(mainDir, "rev-list", "--reverse", target+".."+branch)
+//
+// Callers pass the two refs in the order their question states them, so both
+// directions read naturally: push asks what branch has that origin/<branch>
+// lacks, and `changes --behind` asks what the default branch has that the work
+// branch lacks (branch = the default branch, target = the work branch).
+func CommitsAhead(dir, branch, target string) ([]Commit, error) {
+	out, err := git(dir, "rev-list", "--reverse", target+".."+branch)
 	if err != nil {
 		return nil, err
 	}
-	return commits(mainDir, strings.Fields(out))
+	return commits(dir, strings.Fields(out))
 }
 
 // CherryPickStatus classifies CherryPick's outcome.
