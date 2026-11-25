@@ -1223,7 +1223,8 @@ func TestRenameWorkFolder(t *testing.T) {
 	// The primary's registration follows the moved worktree, and the worktree
 	// itself sits on the new branch.
 	list := shOut(t, filepath.Join(reposRoot, "alpha", "main"), "git", "worktree", "list")
-	if !strings.Contains(list, filepath.Join(newDir, "alpha")) {
+	// git prints POSIX separators even on Windows, so compare in that form.
+	if !strings.Contains(filepath.ToSlash(list), filepath.ToSlash(filepath.Join(newDir, "alpha"))) {
 		t.Errorf("alpha primary does not point at the moved worktree:\n%s", list)
 	}
 	if got := strings.TrimSpace(shOut(t, filepath.Join(newDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-1-fix-login" {
