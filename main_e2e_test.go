@@ -1152,6 +1152,26 @@ func renameGW(t *testing.T, bin string, env []string) func(dir string, args ...s
 	}
 }
 
+// worktreePointsAt reports whether mainDir's worktree list names want, compared
+// by file identity so separators and path case do not decide the answer.
+func worktreePointsAt(t *testing.T, mainDir, want string) bool {
+	t.Helper()
+	wts, err := repo.ListWorktrees(mainDir)
+	if err != nil {
+		t.Fatalf("list worktrees of %s: %v", mainDir, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat %s: %v", want, err)
+	}
+	for _, wt := range wts {
+		if info, err := os.Stat(wt.Path); err == nil && os.SameFile(wantInfo, info) {
+			return true
+		}
+	}
+	return false
+}
+
 // localBranchExists reports whether dir has a local branch with that name.
 func localBranchExists(t *testing.T, dir, branch string) bool {
 	t.Helper()
@@ -1222,10 +1242,9 @@ func TestRenameWorkFolder(t *testing.T) {
 
 	// The primary's registration follows the moved worktree, and the worktree
 	// itself sits on the new branch.
-	list := shOut(t, filepath.Join(reposRoot, "alpha", "main"), "git", "worktree", "list")
-	// git prints POSIX separators even on Windows, so compare in that form.
-	if !strings.Contains(filepath.ToSlash(list), filepath.ToSlash(filepath.Join(newDir, "alpha"))) {
-		t.Errorf("alpha primary does not point at the moved worktree:\n%s", list)
+	if !worktreePointsAt(t, filepath.Join(reposRoot, "alpha", "main"), filepath.Join(newDir, "alpha")) {
+		list := shOut(t, filepath.Join(reposRoot, "alpha", "main"), "git", "worktree", "list")
+		t.Errorf("alpha primary does not point at %q:\n%s", filepath.Join(newDir, "alpha"), list)
 	}
 	if got := strings.TrimSpace(shOut(t, filepath.Join(newDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-1-fix-login" {
 		t.Errorf("alpha worktree branch = %q, want PROJ-1-fix-login", got)
