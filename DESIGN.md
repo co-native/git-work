@@ -196,6 +196,9 @@ review is what holds it:
 - Usage text lives in a `cli.Command` descriptor per command. `main.go` and the group
   dispatchers build their index from the same descriptors that answer `-h`, so a listing
   cannot describe a command differently from the command itself.
+- The top-level index (`git work -h`, `git work help`) ends with the issue tracker URL
+  (`cli.IssuesURL`), so a caller that hits a problem knows where to report it without
+  reading the README. Per-command help and the version banner do not carry it.
 
 `internal/cli/clitest.Check` enforces this per package: a flag registered without being
 documented, or documented without being registered, fails the build. Never declare

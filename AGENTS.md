@@ -48,7 +48,8 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
   Exit codes are 0 success, 2 malformed invocation, 1 the work failed. Usage text lives in
   a `cli.Command` descriptor, and `clitest.Check` fails the build if a flag is registered
   without being documented or documented without being registered. Never declare
-  `-h`/`--help` in a descriptor or on a `FlagSet` - the renderer appends it.
+  `-h`/`--help` in a descriptor or on a `FlagSet` - the renderer appends it. The top-level
+  help index ends with the issue tracker URL (`cli.IssuesURL`).
 
 - **A work branch is never a repo's default branch.** `new`/`add`/`adopt` refuse to record
   it; `teardown` refuses to delete it and `--force` does not override that. Every other

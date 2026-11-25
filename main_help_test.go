@@ -26,9 +26,10 @@ var paths = [][]string{
 	{"config"},
 	{"config", "list"}, {"config", "get"}, {"config", "set"},
 	{"config", "unset"}, {"config", "edit"}, {"config", "path"}, {"config", "init"},
+	{"version"},
 }
 
-// TestEveryPathAnswersHelp is the contract in one assertion: for all 27 paths
+// TestEveryPathAnswersHelp is the contract in one assertion: for all 28 paths
 // and both spellings, usage goes to stdout, stderr stays empty, and the exit
 // code is 0. It runs the real binary because the exit code and the stream are
 // the observable behaviour, and both were wrong in different ways before.
@@ -59,7 +60,28 @@ func TestEveryPathAnswersHelp(t *testing.T) {
 				if !strings.Contains(stdout.String(), "-h, --help") {
 					t.Errorf("help does not document -h/--help:\n%s", stdout.String())
 				}
+				if strings.Contains(stdout.String(), "Report issues at "+cli.IssuesURL) {
+					t.Errorf("per-command help should not carry the issue tracker:\n%s", stdout.String())
+				}
 			})
+		}
+	}
+}
+
+func TestMainHelpNamesIssueTracker(t *testing.T) {
+	bin := buildBinary(t)
+	home := t.TempDir()
+	for _, args := range [][]string{{"-h"}, {"--help"}, {"help"}} {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = t.TempDir()
+		cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config")
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			t.Errorf("git work %v: exit = %v; want 0\n%s", args, err, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Report issues at "+cli.IssuesURL) {
+			t.Errorf("git work %v does not name the issue tracker:\n%s", args, stdout.String())
 		}
 	}
 }

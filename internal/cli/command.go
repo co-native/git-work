@@ -66,6 +66,11 @@ type Command struct {
 // it and every command documents it identically.
 var helpFlag = Flag{Short: "h", Long: "help", Desc: "show this help"}
 
+// IssuesURL is the project's only issue tracker. The top-level index ends with
+// it, so an agent that hits a problem knows where to report it without reading
+// the README, and a copy of the binary cannot point somewhere else.
+const IssuesURL = "https://github.com/co-native/git-work/issues"
+
 // label renders a flag's left-hand column: "-a, --all", "    --main", "-n".
 // Long-only flags are indented by the width of a short form so the long forms
 // stay in one column.
@@ -163,14 +168,15 @@ func indexBody(cmds []*Command, pad string) string {
 	return b.String()
 }
 
-// Index renders a top-level listing: a title line, the command table, and a
-// pointer at per-command help. Used for `git work` with no arguments and for
-// `git work help`.
+// Index renders a top-level listing: a title line, the command table, a
+// pointer at per-command help, and the issue tracker. Used for `git work` with
+// no arguments and for `git work help`.
 func Index(title, usageLine string, cmds []*Command) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\nusage: %s\n\ncommands:\n", title, usageLine)
 	b.WriteString(indexBody(cmds, "  "))
 	fmt.Fprintf(&b, "\nRun `%s` for a command's flags and detail.\n", "git work <command> -h")
+	fmt.Fprintf(&b, "\nReport issues at %s\n", IssuesURL)
 	return strings.TrimRight(b.String(), "\n")
 }
 
