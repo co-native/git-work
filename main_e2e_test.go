@@ -695,7 +695,7 @@ func TestTicketlessAdoptRefreshRebaseSquashDone(t *testing.T) {
 	// The upstream commit must now be an ancestor of the work branch.
 	sh(t, wtAlpha, "git", "merge-base", "--is-ancestor", upstream, "HEAD")
 
-	// Publish both branches so done sees no unpushed work.
+	// Publish both branches so the remote deletion below has branches to remove.
 	sh(t, wtAlpha, "git", "push", "-q", "-u", "origin", "my-feature")
 	sh(t, filepath.Join(workDir, "beta"), "git", "push", "-q", "-u", "origin", "side-quest")
 
@@ -757,6 +757,79 @@ func TestDoneResumableAfterPartialTeardown(t *testing.T) {
 	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
 		t.Errorf("work folder not removed")
 	}
+}
+
+func TestDoneNoFlagsRequiresMergedWork(t *testing.T) {
+	t.Run("merged: warns and keeps the branch", func(t *testing.T) {
+		bin, home, reposRoot, workRoot, env := newTestEnv(t)
+		origin := makeOriginIn(t, home, "alpha")
+		if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+			t.Fatalf("clone: %v\n%s", err, out)
+		}
+		if out, err := gwRun(t, bin, home, env,
+			"new", "PROJ-20", "--repos", "alpha", "--branch", "PROJ-20-x", "--non-interactive"); err != nil {
+			t.Fatalf("new: %v\n%s", err, out)
+		}
+		workDir := filepath.Join(workRoot, "PROJ-20-proj-20")
+		wt := filepath.Join(workDir, "alpha")
+		sh(t, wt, "git", "config", "user.email", "t@t.t")
+		sh(t, wt, "git", "config", "user.name", "t")
+		os.WriteFile(filepath.Join(wt, "work.txt"), []byte("x\n"), 0o644)
+		sh(t, wt, "git", "add", "work.txt")
+		sh(t, wt, "git", "commit", "-qm", "work")
+		sh(t, wt, "git", "push", "-q", "-u", "origin", "PROJ-20-x")
+
+		// Fast-forward origin main to the work branch: contained by ancestry.
+		seed := filepath.Join(home, "seed-alpha")
+		sh(t, seed, "git", "fetch", "-q", "origin")
+		sh(t, seed, "git", "merge", "-q", "--ff-only", "origin/PROJ-20-x")
+		sh(t, seed, "git", "push", "-q", "origin", "main")
+
+		out, err := gwRun(t, bin, home, env, "done", "PROJ-20-proj-20", "--non-interactive")
+		if err != nil {
+			t.Fatalf("done should succeed on merged work: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "left in place") {
+			t.Errorf("done should warn that the branch stays, got:\n%s", out)
+		}
+		main := filepath.Join(reposRoot, "alpha", "main")
+		if got := strings.TrimSpace(shOut(t, main, "git", "branch", "--list", "PROJ-20-x")); got == "" {
+			t.Errorf("local branch PROJ-20-x should survive a no-flag teardown")
+		}
+		if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+			t.Errorf("work folder not removed")
+		}
+	})
+
+	t.Run("unmerged: blocks and keeps the folder", func(t *testing.T) {
+		bin, home, _, workRoot, env := newTestEnv(t)
+		origin := makeOriginIn(t, home, "alpha")
+		if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+			t.Fatalf("clone: %v\n%s", err, out)
+		}
+		if out, err := gwRun(t, bin, home, env,
+			"new", "PROJ-21", "--repos", "alpha", "--branch", "PROJ-21-x", "--non-interactive"); err != nil {
+			t.Fatalf("new: %v\n%s", err, out)
+		}
+		workDir := filepath.Join(workRoot, "PROJ-21-proj-21")
+		wt := filepath.Join(workDir, "alpha")
+		sh(t, wt, "git", "config", "user.email", "t@t.t")
+		sh(t, wt, "git", "config", "user.name", "t")
+		os.WriteFile(filepath.Join(wt, "work.txt"), []byte("x\n"), 0o644)
+		sh(t, wt, "git", "add", "work.txt")
+		sh(t, wt, "git", "commit", "-qm", "work")
+
+		out, err := gwRun(t, bin, home, env, "done", "PROJ-21-proj-21", "--non-interactive")
+		if err == nil {
+			t.Fatalf("done should block unmerged work, got:\n%s", out)
+		}
+		if !strings.Contains(out, "not merged into origin/main") {
+			t.Errorf("done should name the unmerged branch, got:\n%s", out)
+		}
+		if _, err := os.Stat(workDir); err != nil {
+			t.Errorf("work folder removed despite the block: %v", err)
+		}
+	})
 }
 
 func TestDoneRemovalGuard(t *testing.T) {

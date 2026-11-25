@@ -52,10 +52,10 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
 
 - **A work branch is never a repo's default branch.** `new`/`add`/`adopt` refuse to record
   it; `teardown` refuses to delete it and `--force` does not override that. Every other
-  teardown safety check is trivially satisfied by the default branch - it is merged into
-  `origin/HEAD` by definition, has an upstream with nothing unpushed, and agrees with a
-  worktree sitting on it - so this guard is the only thing standing between
-  `done --delete-local --delete-remote` and deleting `main` locally and on origin.
+  teardown safety check is trivially satisfied by the default branch - it is contained in
+  `origin/HEAD` by definition, and agrees with a worktree sitting on it - so this guard is
+  the only thing standing between `done --delete-local --delete-remote` and deleting
+  `main` locally and on origin.
 
 - **A work folder has one checkout mode, recorded in state.** `worktree` uses primary
   clones and linked worktrees; `clone` uses full clones and no repos root. `new --mode`

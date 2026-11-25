@@ -434,12 +434,12 @@ origin with placeholder branches.
 Each push runs `git push -u origin <branch>` from the repo's checkout (worktree or clone)
 (`repo.PushBranchUpstream`), targeting the branch recorded in state - not whatever the
 worktree has checked out. `-u` is explicit so a first push establishes `@{upstream}`
-regardless of the operator's `push.autoSetupRemote` (`done`'s unpushed check and later
-bare `git push` key off it). `-f`/`--force` adds `--force-with-lease` - never bare
-`--force`; a lease rejection (the remote moved beyond our remote-tracking refs) is a
-failure to inspect, not something to override. Deliberately **no fetch** before pushing:
-the lease _is_ the remote-tracking refs, and fetching right before the push would weaken
-it. No dirty check either - normal `git push` ignores uncommitted changes.
+regardless of the operator's `push.autoSetupRemote` (`git status` and a later bare
+`git push` key off it). `-f`/`--force` adds `--force-with-lease` - never bare `--force`; a
+lease rejection (the remote moved beyond our remote-tracking refs) is a failure to
+inspect, not something to override. Deliberately **no fetch** before pushing: the lease
+_is_ the remote-tracking refs, and fetching right before the push would weaken it. No
+dirty check either - normal `git push` ignores uncommitted changes.
 
 Failure handling is `done`'s model, not `integrate`'s: pushes are independent, so per-repo
 failures (e.g. a non-fast-forward rejection, reported with the rebase-or-`-f` remedy) are
@@ -619,10 +619,14 @@ the old path, `ls` comes back empty, and anything that resolves the working dire
 starts failing until you `cd` elsewhere. The refusal happens before state is loaded or any
 checks run, so the folder is untouched.
 
-Safety checks (per repo): uncommitted changes, unpushed commits, and - when deleting
-branches - whether the branch is merged into the remote default branch (from
-`origin/HEAD`). When the ancestry check says "not merged" it falls back to patch
-equivalence (`repo.IsPatchEquivalent`), so squash-merged branches count as merged (labeled
+Safety checks (per repo): uncommitted changes, a checkout whose branch disagrees with the
+recorded one, and whether the work branch is contained in the remote default branch (from
+`origin/HEAD`). Containment runs on every path, with or without delete flags: work that is
+not on the shared default branch blocks teardown, so a no-flag run cannot leave an
+unmerged branch behind unnoticed and a delete run cannot remove the only refs holding it.
+Each repo is fetched first (unless `--no-fetch`), so a merge that landed on origin is
+visible. When the ancestry check says "not merged" it falls back to patch equivalence
+(`repo.IsPatchEquivalent`), so squash-merged branches count as merged (labeled
 "squash-merged" in output, and force-deleted locally since `git branch -d` would refuse
 them). `IsPatchEquivalent` finishes with a `git merge-tree --write-tree` backstop: if
 merging the branch into the target produces the target's tree unchanged, the branch is
@@ -630,29 +634,28 @@ contained even when it arrived as a mix of squashed and individually-cherry-pick
 (a shape the per-commit-cherry and single-squash-probe checks alone can't see); a
 conflicting merge, an old git without `--write-tree`, or any other failure falls back to
 the earlier signals rather than surfacing an error. `--force` remains the path for
-teardown of unmerged work. In worktree mode teardown is worktree-then-branch per repo; in
-clone mode remote deletion happens before the clone is removed, because the clone is the
-only local repository that can run the push. Teardown is shared with `rm` via
-`internal/teardown` (`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is
-dropped from `.git-work.yaml` and saved immediately, so state stays honest through a
-partial or blocked teardown - a re-run resumes exactly the repos still outstanding, and
-the final repo count is captured before teardown mutates state.
+teardown of unmerged work. A no-flag run leaves the local branch in the primary after
+removing the checkout in worktree mode, and warns; in clone mode the branch goes with the
+clone. Teardown is worktree-then-branch per repo in worktree mode; in clone mode remote
+deletion happens before the clone is removed, because the clone is the only local
+repository that can run the push. Teardown is shared with `rm` via `internal/teardown`
+(`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is dropped from
+`.git-work.yaml` and saved immediately, so state stays honest through a partial or blocked
+teardown - a re-run resumes exactly the repos still outstanding, and the final repo count
+is captured before teardown mutates state.
 
 Leftover `integrate-*` and `agent-*` entries under `.worktrees` are a gate problem too:
 `done` reports them and aborts unless `--force`, which discards them after repo teardown
 and before the leftover Keep decision. `rm --force` removes only the target repo's entries
 and prunes an empty agent directory.
 
-The unpushed check treats a branch with no upstream as unpushed, so a branch that was
-squash-merged and never pushed would otherwise be blocked. Bypass condition: when BOTH
-`--delete-local` and `--delete-remote` are passed and the branch is verified contained in
-the remote default branch - by ancestry (`repo.IsMergedInto`) or patch equivalence
-(`repo.IsPatchEquivalent`), the same containment the merged check performs, computed once
-per repo and shared - the unpushed problem is suppressed and a note is emitted instead. If
-either delete flag is absent, or containment cannot be verified (any check error stays a
-warning-plus-problem), the unpushed problem fires as usual. Patch equivalence is measured
-over the full merge-base..branch diff, so a branch carrying commits beyond the squash
-merge is not contained and still reports both the unpushed and the unmerged problem.
+Containment, not the branch's upstream, decides. A branch's own remote can be stale or
+absent while its work is already on the default branch, and a branch can be pushed while
+none of it is merged. The check asks the question that matters for teardown: is this work
+on the shared default branch? A "no" is one problem on every path, and `--force` is the
+override. Patch equivalence is measured over the full merge-base..branch diff, so a branch
+carrying commits beyond a squash merge is not contained and reports the same "not merged"
+problem.
 
 The work folder's "extra" files (anything at its root git-work didn't generate; repo
 checkout dirs and `.worktrees/` are skipped whole, not walked into) are computed up front,
@@ -671,14 +674,13 @@ non-interactive way to keep the folder).
 Removes one repo from the current work folder - `done` narrowed to a single repo. Run from
 inside a work folder (located via `state.FindUp`); `<repo>` must already be in
 `.git-work.yaml` or the command errors. Runs the same `teardown.CheckRepo` safety checks
-and `teardown.TeardownRepo` teardown as `done` (uncommitted/unpushed/merged-or-contained,
-`--force` to override, checkout-then-branch order), scoped to that repo, then
-re-aggregates the `README.md` and instructions file managed blocks and the workspace
-file's folder list from the repos that remain. The rest of the work folder - other repos,
-`TICKET.md`, the state file itself - is left untouched; `rm` never removes the folder.
-Removing the last repo leaves an accurate zero-repo `.git-work.yaml` and regenerated
-`TICKET.md`, `README.md` and instructions file rather than an invisible or half-deleted
-folder.
+and `teardown.TeardownRepo` teardown as `done` (uncommitted/contained, `--force` to
+override, checkout-then-branch order), scoped to that repo, then re-aggregates the
+`README.md` and instructions file managed blocks and the workspace file's folder list from
+the repos that remain. The rest of the work folder - other repos, `TICKET.md`, the state
+file itself - is left untouched; `rm` never removes the folder. Removing the last repo
+leaves an accurate zero-repo `.git-work.yaml` and regenerated `TICKET.md`, `README.md` and
+instructions file rather than an invisible or half-deleted folder.
 
 ### `config <subcommand>`
 
@@ -704,13 +706,12 @@ record one, and `teardown` refuses to delete one - the latter not overridable by
 `--force`.
 
 The guard exists because the default branch satisfies every other teardown safety check
-trivially, and does so _because_ it is the default branch. It is merged into `origin/HEAD`
-by definition, so the merged check passes. It has an upstream with nothing unpushed, so
-the unpushed check passes. A worktree sitting on it agrees with state, so
-`WorktreeBranchProblem` passes. Nothing was dirty. The result was that
-`done --delete-local --delete-remote` on a work folder whose state recorded `main` would
-report zero problems and proceed to delete `main` locally and on origin - and every check
-that should have caught it was, correctly, saying yes.
+trivially, and does so _because_ it is the default branch. It is contained in
+`origin/HEAD` by definition, so the containment check passes. A worktree sitting on it
+agrees with state, so `WorktreeBranchProblem` passes. Nothing was dirty. The result was
+that `done --delete-local --delete-remote` on a work folder whose state recorded `main`
+would report zero problems and proceed to delete `main` locally and on origin - and every
+check that should have caught it was, correctly, saying yes.
 
 `repo.IsDefaultBranchFor` checks the recorded `repos[].default_branch` first, then
 `origin/HEAD`, and only falls back to the local HEAD for legacy worktree state with no
@@ -1170,7 +1171,7 @@ that, and the listings above are where the spelling comes from. There are no
 re-syncs it when a branch is switched by hand, so it can drift from what a worktree has
 checked out. That matters because the commands split on which one they read: `push` and
 `integrate` act on the **recorded** branch, `rebase` acts on the **checked-out** one, and
-`done`/`rm` safety-check the worktree's HEAD (`repo.HasUnpushedCommits`) but delete the
+`done`/`rm` check the checkout's HEAD for uncommitted changes and drift but delete the
 recorded branch - locally and on the remote. Left alone, drift means publishing a branch
 you are not looking at, integrating commits you did not mean to, or deleting a branch
 other than the one that was checked.

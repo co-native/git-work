@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -77,8 +76,8 @@ func setupWorkBranch(t *testing.T, l layout.Layout, workDir, name, origin string
 
 // setupWorkBranchNoPush clones origin as the primary for name, adds a worktree
 // on a new work branch under workDir, and commits one change on it WITHOUT
-// pushing (no upstream) - the never-pushed case the unpushed check trips on.
-// Returns the worktree path.
+// pushing. Only the containment check can clear a branch like this. Returns the
+// worktree path.
 func setupWorkBranchNoPush(t *testing.T, l layout.Layout, workDir, name, origin string) string {
 	t.Helper()
 	if err := repo.Clone(origin, l.RepoDir(name), nil); err != nil {
@@ -109,6 +108,35 @@ func commitOnOrigin(t *testing.T, origin, fname, content, msg string) {
 	runGit(t, w, "config", "user.name", "t")
 	writeCommit(t, w, fname, content, msg)
 	runGit(t, w, "push", "-q", "origin", "main")
+}
+
+// mergeBranchIntoOriginMain fast-forwards origin's main to origin/<branch>, so
+// the work branch is contained by ancestry.
+func mergeBranchIntoOriginMain(t *testing.T, origin, branch string) {
+	t.Helper()
+	w := filepath.Join(t.TempDir(), "w")
+	runGit(t, "", "clone", "-q", origin, w)
+	runGit(t, w, "config", "user.email", "t@t.t")
+	runGit(t, w, "config", "user.name", "t")
+	runGit(t, w, "merge", "-q", "--ff-only", "origin/"+branch)
+	runGit(t, w, "push", "-q", "origin", "main")
+}
+
+// setupCloneWorkBranch creates a full clone at workDir/name on a pushed work
+// branch - the clone-mode counterpart of setupWorkBranch.
+func setupCloneWorkBranch(t *testing.T, workDir, name, origin string) string {
+	t.Helper()
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(workDir, name)
+	runGit(t, "", "clone", "-q", origin, dir)
+	runGit(t, dir, "config", "user.email", "t@t.t")
+	runGit(t, dir, "config", "user.name", "t")
+	runGit(t, dir, "checkout", "-q", "-b", "PROJ-1-work")
+	writeCommit(t, dir, "feat.txt", "feature\n", "feat")
+	runGit(t, dir, "push", "-q", "-u", "origin", "PROJ-1-work")
+	return dir
 }
 
 // squashMergeOnOrigin squash-merges branch into origin's main from a
@@ -224,55 +252,15 @@ func TestTeardownRepoDeletesSquashMergedBranchWithoutForce(t *testing.T) {
 	}
 }
 
-func TestCheckRepoSquashMergedNeverPushedBothDeleteBypassesUnpushed(t *testing.T) {
-	root := t.TempDir()
-	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
-	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
-	origin := makeOrigin(t)
-	setupWorkBranchNoPush(t, l, workDir, "alpha", origin)
-	commitOnOrigin(t, origin, "feat.txt", "feature\n", "squash PROJ-1-work")
-
-	o := Options{DeleteLocal: true, DeleteRemote: true}
-	r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
-	var problems []string
-	stderr := captureStderr(t, func() {
-		problems = CheckRepo(o, l, r, workDir)
-	})
-	if len(problems) != 0 {
-		t.Errorf("problems = %v; want none for a squash-merged never-pushed branch with both delete flags", problems)
-	}
-	if !strings.Contains(stderr, "alpha: branch PROJ-1-work contained in origin/main; unpushed commits already merged") {
-		t.Errorf("stderr = %q; want an unpushed-suppression note", stderr)
-	}
-
-	// Teardown must succeed without --force: CheckRepo already fetched, so the
-	// local branch force-deletes as a squash merge and there is no remote
-	// branch to delete.
-	main, err := l.RepoMain("alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := &state.State{Repos: []state.Repo{r}}
-	var failures []string
-	_ = captureStderr(t, func() {
-		failures = TeardownRepo(o, l, st, st.Repos[0], workDir)
-	})
-	if len(failures) != 0 {
-		t.Errorf("failures = %v; want none", failures)
-	}
-	exists, err := repo.LocalBranchExists(main, "PROJ-1-work")
-	if err != nil || exists {
-		t.Errorf("LocalBranchExists = %v, %v; want branch deleted", exists, err)
-	}
-}
-
-func TestCheckRepoSquashMergedNeverPushedSingleDeleteKeepsUnpushed(t *testing.T) {
+func TestCheckRepoSquashMergedNeverPushedPassesAllFlags(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		o    Options
+		name     string
+		o        Options
+		wantNote string
 	}{
-		{"delete-local only", Options{DeleteLocal: true}},
-		{"no delete flags", Options{}},
+		{"both delete flags", Options{DeleteLocal: true, DeleteRemote: true}, "squash-merged into origin/main"},
+		{"delete-local only", Options{DeleteLocal: true}, "squash-merged into origin/main"},
+		{"no delete flags", Options{}, "local branch PROJ-1-work left in place in the primary"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -284,18 +272,42 @@ func TestCheckRepoSquashMergedNeverPushedSingleDeleteKeepsUnpushed(t *testing.T)
 
 			r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
 			var problems []string
-			_ = captureStderr(t, func() {
+			stderr := captureStderr(t, func() {
 				problems = CheckRepo(tc.o, l, r, workDir)
 			})
-			want := []string{"alpha: unpushed commits"}
-			if !reflect.DeepEqual(problems, want) {
-				t.Errorf("problems = %v; want %v (unpushed must fire without both delete flags)", problems, want)
+			if len(problems) != 0 {
+				t.Errorf("problems = %v; want none for a contained branch", problems)
+			}
+			if !strings.Contains(stderr, tc.wantNote) {
+				t.Errorf("stderr = %q; want %q", stderr, tc.wantNote)
+			}
+
+			if !tc.o.DeleteLocal || !tc.o.DeleteRemote {
+				return
+			}
+			// Teardown must also succeed without --force: the never-pushed
+			// branch force-deletes as a squash merge, and there is no remote
+			// branch to delete.
+			main, err := l.RepoMain("alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := &state.State{Repos: []state.Repo{r}}
+			var failures []string
+			_ = captureStderr(t, func() {
+				failures = TeardownRepo(tc.o, l, st, st.Repos[0], workDir)
+			})
+			if len(failures) != 0 {
+				t.Errorf("failures = %v; want none", failures)
+			}
+			if exists, err := repo.LocalBranchExists(main, "PROJ-1-work"); err != nil || exists {
+				t.Errorf("LocalBranchExists = %v, %v; want branch deleted", exists, err)
 			}
 		})
 	}
 }
 
-func TestCheckRepoSquashMergedWithExtraCommitKeepsBothProblems(t *testing.T) {
+func TestCheckRepoSquashMergedWithExtraCommitReportsNotMerged(t *testing.T) {
 	root := t.TempDir()
 	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
 	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
@@ -312,13 +324,141 @@ func TestCheckRepoSquashMergedWithExtraCommitKeepsBothProblems(t *testing.T) {
 	_ = captureStderr(t, func() {
 		problems = CheckRepo(o, l, r, workDir)
 	})
-	sort.Strings(problems)
-	want := []string{
-		"alpha: branch PROJ-1-work not merged into origin/main",
-		"alpha: unpushed commits",
-	}
+	want := []string{"alpha: branch PROJ-1-work not merged into origin/main"}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("problems = %v; want %v", problems, want)
+	}
+}
+
+func TestCheckRepoBlocksUnmergedWithoutDeleteFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, layout.Layout, string, string) string
+	}{
+		{"pushed", func(t *testing.T, l layout.Layout, workDir, origin string) string {
+			return setupWorkBranch(t, l, workDir, "alpha", origin)
+		}},
+		{"local only", func(t *testing.T, l layout.Layout, workDir, origin string) string {
+			return setupWorkBranchNoPush(t, l, workDir, "alpha", origin)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
+			workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
+			origin := makeOrigin(t)
+			tc.setup(t, l, workDir, origin)
+
+			r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
+			var problems []string
+			stderr := captureStderr(t, func() {
+				problems = CheckRepo(Options{}, l, r, workDir)
+			})
+			want := []string{"alpha: branch PROJ-1-work not merged into origin/main"}
+			if !reflect.DeepEqual(problems, want) {
+				t.Errorf("problems = %v; want %v", problems, want)
+			}
+			if strings.Contains(stderr, "left in place") {
+				t.Errorf("stderr = %q; a blocked branch must not warn that it is left", stderr)
+			}
+		})
+	}
+}
+
+func TestCheckRepoEmptyBranchPassesWithoutDeleteFlags(t *testing.T) {
+	// Issue #4: a fresh branch with no commits of its own and no remote branch
+	// is contained in origin/main, so it must not read as unpushed work.
+	root := t.TempDir()
+	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
+	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
+	origin := makeOrigin(t)
+	if err := repo.Clone(origin, l.RepoDir("alpha"), nil); err != nil {
+		t.Fatal(err)
+	}
+	main, err := l.RepoMain("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(workDir, "alpha")
+	if err := repo.AddWorktree(main, wt, "PROJ-1-work", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
+	var problems []string
+	stderr := captureStderr(t, func() {
+		problems = CheckRepo(Options{}, l, r, workDir)
+	})
+	if len(problems) != 0 {
+		t.Errorf("problems = %v; want none for an empty branch", problems)
+	}
+	if !strings.Contains(stderr, "left in place") {
+		t.Errorf("stderr = %q; want the no-flag worktree warning", stderr)
+	}
+}
+
+func TestCheckRepoFastForwardedBranchWithStaleUpstreamPasses(t *testing.T) {
+	// Issue #4: origin/<branch> still points at the pre-merge tip, but the
+	// branch itself is now at origin/main. Containment, not the upstream,
+	// decides.
+	root := t.TempDir()
+	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
+	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
+	origin := makeOrigin(t)
+	wt := setupWorkBranch(t, l, workDir, "alpha", origin)
+	commitOnOrigin(t, origin, "feat.txt", "feature\n", "squash PROJ-1-work")
+	runGit(t, wt, "fetch", "-q", "origin")
+	runGit(t, wt, "reset", "-q", "--hard", "origin/main")
+
+	r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
+	var problems []string
+	_ = captureStderr(t, func() {
+		problems = CheckRepo(Options{}, l, r, workDir)
+	})
+	if len(problems) != 0 {
+		t.Errorf("problems = %v; want none for a branch at origin/main", problems)
+	}
+}
+
+func TestCheckRepoWarnsLeftInPlaceOnlyInWorktreeMode(t *testing.T) {
+	root := t.TempDir()
+	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
+	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
+	origin := makeOrigin(t)
+	setupWorkBranch(t, l, workDir, "alpha", origin)
+	mergeBranchIntoOriginMain(t, origin, "PROJ-1-work")
+
+	r := state.Repo{Name: "alpha", Branch: "PROJ-1-work"}
+	var problems []string
+	stderr := captureStderr(t, func() {
+		problems = CheckRepo(Options{}, l, r, workDir)
+	})
+	if len(problems) != 0 {
+		t.Fatalf("worktree problems = %v; want none", problems)
+	}
+	if !strings.Contains(stderr, "left in place") {
+		t.Errorf("worktree stderr = %q; want the branch-left warning", stderr)
+	}
+
+	// Clone mode removes the branch with the clone, so there is nothing to warn
+	// about.
+	root = t.TempDir()
+	l = layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
+	workDir = filepath.Join(l.WorkRoot, "PROJ-1-work")
+	origin = makeOrigin(t)
+	cloneDir := setupCloneWorkBranch(t, workDir, "alpha", origin)
+	mergeBranchIntoOriginMain(t, origin, "PROJ-1-work")
+
+	o := Options{Mode: layout.ModeClone, RepoDir: func(string) (string, error) { return cloneDir, nil }}
+	r = state.Repo{Name: "alpha", Branch: "PROJ-1-work", DefaultBranch: "main"}
+	stderr = captureStderr(t, func() {
+		problems = CheckRepo(o, l, r, workDir)
+	})
+	if len(problems) != 0 {
+		t.Fatalf("clone problems = %v; want none", problems)
+	}
+	if strings.Contains(stderr, "left in place") {
+		t.Errorf("clone stderr = %q; clone mode must not warn about a left branch", stderr)
 	}
 }
 
@@ -373,9 +513,9 @@ func TestTeardownRepoPartialLeavesFailedRepoInState(t *testing.T) {
 }
 
 func TestCheckRepoReportsBranchDrift(t *testing.T) {
-	// Teardown deletes r.Branch locally and remotely while the unpushed check
-	// measures the worktree's HEAD; a disagreement means checking one branch
-	// and deleting another, so it has to be a problem.
+	// Teardown deletes r.Branch locally and remotely while the containment
+	// check measures r.Branch; a worktree on another branch means checking one
+	// branch and deleting a different one, so it has to be a problem.
 	root := t.TempDir()
 	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
 	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
@@ -439,10 +579,9 @@ func TestCheckRepoReportsBranchDriftRegardlessOfForce(t *testing.T) {
 
 func TestCheckRepoReportsDefaultBranch(t *testing.T) {
 	// A state file recording the repo's default branch as the work branch
-	// passes every other safety check by construction - it is merged into
-	// origin/HEAD, has an upstream with nothing unpushed, and is clean - so
-	// without this problem nothing at all stands between the operator and
-	// deleting main locally and on origin.
+	// passes every other safety check by construction - it is contained in
+	// origin/HEAD and is clean - so without this problem nothing at all stands
+	// between the operator and deleting main locally and on origin.
 	root := t.TempDir()
 	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
 	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")

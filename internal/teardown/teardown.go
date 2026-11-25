@@ -17,7 +17,8 @@ import (
 
 // Options selects which branches a teardown deletes and how safety checks
 // behave. Force overrides safety-check problems (and force-deletes worktrees);
-// NoFetch skips the pre-merged-check fetch.
+// NoFetch skips the fetch before the containment check, so the check reads the
+// origin refs as of the last fetch.
 //
 // Mode and the two resolvers make the shared path mode-aware without importing
 // state/config here: RepoDir returns a primary or a clone, and RemoteURL is the
@@ -51,19 +52,25 @@ func Gate(problems []string, force bool) error {
 	return nil
 }
 
-// CheckRepo runs one repo's safety checks (uncommitted / unpushed /
-// merged-or-contained) and returns this repo's problems. An error while
-// RUNNING a check is a warning plus a counted problem (conservative), never a
-// mid-check abort, so a partially torn-down folder can still be processed;
-// --force overrides problems. A repo whose worktree is already gone is skipped.
+// CheckRepo runs one repo's safety checks (uncommitted / drift / contained)
+// and returns this repo's problems. An error while RUNNING a check is a
+// warning plus a counted problem (conservative), never a mid-check abort, so a
+// partially torn-down folder can still be processed; --force overrides
+// problems. A repo whose worktree is already gone is skipped.
 //
-// The unpushed check treats a branch with no upstream as unpushed. When BOTH
-// DeleteLocal and DeleteRemote are set and the branch is verified contained in
-// the remote default branch (ancestry or patch equivalence - the same verdict
-// the merged check uses, computed once), the unpushed problem is suppressed and
-// a note is emitted instead: the never-pushed commits are already merged. With
-// only one delete flag, no delete flag, or when containment cannot be verified,
-// the unpushed problem fires as before. Progress notes/warnings print to stderr.
+// Containment is the gate on every path, with or without delete flags: the
+// work branch's commits must be on the remote default branch, by ancestry or
+// patch equivalence, so squash merges count. A branch that is not contained is
+// a problem - teardown must neither forget unmerged work nor delete the only
+// refs that hold it. The same verdict labels a squash merge on a delete run.
+// The default-branch refusal, reported here for delete flags, is the one
+// problem --force does not override.
+//
+// The repo is fetched first (unless NoFetch), so a merge that landed on origin
+// since the last fetch is visible without a separate refresh. In worktree mode
+// a no-flag run leaves the local branch in the primary after removing the
+// checkout, so a warning names it; in clone mode the branch goes with the
+// clone. Progress notes/warnings print to stderr.
 func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []string {
 	var problems []string
 	addProblem := func(format string, a ...any) {
@@ -86,44 +93,20 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 		addProblem("%s: uncommitted changes", r.Name)
 	}
 
-	// Teardown is where drift is most dangerous: the unpushed check below
-	// measures the WORKTREE's HEAD while the deletions below target r.Branch,
-	// so a disagreement means safety-checking one branch and then deleting a
-	// different one - locally and on the remote. Report it before the checks
-	// it invalidates. --force still overrides, like every other problem here.
+	// Teardown is where drift is most dangerous: containment and the deletions
+	// both target r.Branch, while the worktree may be on another branch, so a
+	// disagreement means checking one branch and then deleting a different one
+	// - locally and on the remote. Report it before the checks it invalidates.
+	// --force still overrides, like every other problem here.
 	if msg, err := repo.WorktreeBranchProblem(wt, r.Branch); err != nil {
 		warnProblem("%s: could not check the worktree's branch: %v", r.Name, err)
 	} else if msg != "" {
 		addProblem("%s: %s", r.Name, msg)
 	}
 
-	// The unpushed check treats a branch with no upstream as unpushed, so
-	// a branch that was squash-merged and never pushed trips it. When both
-	// delete flags are set and the branch is verified contained in the
-	// remote default branch (the same containment the merged check below
-	// establishes), that unpushed work is already merged and the problem
-	// is suppressed in favor of a note. Compute the result now but report
-	// it only once containment is known: reportUnpushed fires the problem
-	// (or a check-error problem) in every path where containment is not
-	// verified.
-	unpushed, unpushedErr := repo.HasUnpushedCommits(wt)
-	reportUnpushed := func() {
-		if unpushedErr != nil {
-			warnProblem("%s: could not check for unpushed commits: %v", r.Name, unpushedErr)
-		} else if unpushed {
-			addProblem("%s: unpushed commits", r.Name)
-		}
-	}
-
-	if !o.DeleteLocal && !o.DeleteRemote {
-		reportUnpushed()
-		return problems
-	}
-
 	main, err := repoDir(o, l, r.Name)
 	if err != nil {
 		warnProblem("%s: %v", r.Name, err)
-		reportUnpushed()
 		return problems
 	}
 	if !o.NoFetch {
@@ -131,50 +114,47 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 			warnProblem("%s: fetch failed: %v", r.Name, err)
 		}
 	}
+
 	// Surface the default-branch refusal here too, after the fetch has had a
 	// chance to freshen origin/HEAD. TeardownRepo enforces it regardless; this
 	// is so the operator learns before any repo is torn down rather than
 	// discovering it as a mid-run failure. Worded to say --force will not help,
 	// since unlike every other problem here it genuinely will not.
-	if isDefault, derr := repo.IsDefaultBranchFor(main, r.DefaultBranch, r.Branch); derr != nil {
-		warnProblem("%s: cannot determine the default branch: %v", r.Name, derr)
-	} else if isDefault {
-		addProblem("%s: %s is the repo's default branch and will not be deleted (--force does not override this)", r.Name, r.Branch)
+	if o.DeleteLocal || o.DeleteRemote {
+		if isDefault, derr := repo.IsDefaultBranchFor(main, r.DefaultBranch, r.Branch); derr != nil {
+			warnProblem("%s: cannot determine the default branch: %v", r.Name, derr)
+		} else if isDefault {
+			addProblem("%s: %s is the repo's default branch and will not be deleted (--force does not override this)", r.Name, r.Branch)
+		}
 	}
+
 	exists, err := repo.LocalBranchExists(main, r.Branch)
 	if err != nil {
 		warnProblem("%s: could not check branch %s: %v", r.Name, r.Branch, err)
-		reportUnpushed()
 		return problems
 	}
 	if !exists {
-		reportUnpushed()
-		return problems // nothing to delete in this repo, nothing to verify
+		return problems // nothing to verify: the branch is already gone
 	}
 	target, err := repo.RemoteDefaultRef(main)
 	if err != nil {
 		def, derr := repo.DefaultBranchFor(main, r.DefaultBranch)
 		if derr != nil {
 			warnProblem("%s: could not determine default branch: %v", r.Name, err)
-			reportUnpushed()
 			return problems
 		}
 		target = def
 	}
 
-	// Verify containment once and share the verdict between the unpushed
-	// suppression and the merged check. Ancestry (IsMergedInto) misses
-	// squash merges (the squashed commit is a new object), so a "not
-	// merged" ancestry result falls back to patch equivalence
-	// (IsPatchEquivalent) - a branch whose combined changes target already
-	// contains is merged all the same. IsPatchEquivalent runs at most once
-	// and its result feeds both checks below.
+	// Ancestry (IsMergedInto) misses squash merges (the squashed commit is a
+	// new object), so a "not merged" result falls back to patch equivalence
+	// (IsPatchEquivalent). The verdict gates every path and labels a squash
+	// merge on a delete run.
 	contained, squashMerged := false, false
 	merged, err := repo.IsMergedInto(main, r.Branch, target)
 	switch {
 	case err != nil:
 		warnProblem("%s: could not check if %s is merged into %s: %v", r.Name, r.Branch, target, err)
-		reportUnpushed()
 		return problems
 	case merged:
 		contained = true
@@ -182,32 +162,23 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 		eq, eqErr := repo.IsPatchEquivalent(main, r.Branch, target)
 		if eqErr != nil {
 			warnProblem("%s: could not check if %s is squash-merged into %s: %v", r.Name, r.Branch, target, eqErr)
-			reportUnpushed()
 			return problems
 		}
 		contained, squashMerged = eq, eq
 	}
-
-	// Unpushed suppression: only when both delete flags are set and the
-	// branch is verified contained. A check error always reports (via
-	// reportUnpushed); only a genuine "unpushed commits" problem is
-	// swapped for a note.
-	if o.DeleteLocal && o.DeleteRemote && contained && unpushedErr == nil && unpushed {
-		fmt.Fprintf(os.Stderr, "git-work: %s: branch %s contained in %s; unpushed commits already merged, not blocking teardown\n", r.Name, r.Branch, target)
-	} else {
-		reportUnpushed()
+	if !contained {
+		addProblem("%s: branch %s not merged into %s", r.Name, r.Branch, target)
+		return problems
 	}
 
-	// Merged check: squash-merged branches are labeled (and force-deleted
-	// at teardown since `git branch -d` refuses them); ancestry-merged
-	// branches pass silently; anything else is genuinely unmerged.
-	switch {
-	case squashMerged:
-		fmt.Fprintf(os.Stderr, "git-work: %s: branch %s squash-merged into %s\n", r.Name, r.Branch, target)
-	case contained:
-		// merged by ancestry; nothing to report
-	default:
-		addProblem("%s: branch %s not merged into %s", r.Name, r.Branch, target)
+	if o.DeleteLocal || o.DeleteRemote {
+		if squashMerged {
+			fmt.Fprintf(os.Stderr, "git-work: %s: branch %s squash-merged into %s\n", r.Name, r.Branch, target)
+		}
+		return problems
+	}
+	if o.Mode.OrDefault() == layout.ModeWorktree {
+		fmt.Fprintf(os.Stderr, "git-work: %s: local branch %s left in place in the primary\n", r.Name, r.Branch)
 	}
 	return problems
 }

@@ -100,9 +100,9 @@ git work done PROJ-123-add-auth    # safety-check, then tear down
 ```
 
 `git work done` will not delete anything it is not sure about: it checks each repo for
-uncommitted changes, unpushed commits, and whether the branch made it into the default
-branch (recognising squash merges), and it refuses to touch files it did not create. Every
-command answers `-h`.
+uncommitted changes and whether the branch's work is on the default branch (recognising
+squash merges); it fetches first, and refuses to tear down unmerged work without
+`--force`. It also refuses to touch files it did not create. Every command answers `-h`.
 
 ## Configuration
 

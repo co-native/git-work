@@ -124,10 +124,10 @@ func IsDefaultBranch(mainDir, branch string) (bool, error) {
 // the repo at mainDir, or "" when it may. Callers prefix it with the repo name.
 //
 // A work branch is never a repo's default branch, because every teardown safety
-// check is trivially satisfied by it: the default branch is merged into
-// origin/HEAD by definition, has an upstream with nothing unpushed, and agrees
-// with a worktree sitting on it. Nothing else stands between
-// `done --delete-local --delete-remote` and deleting it locally and on origin.
+// check is trivially satisfied by it: the default branch is contained in
+// origin/HEAD by definition, and agrees with a worktree sitting on it. Nothing
+// else stands between `done --delete-local --delete-remote` and deleting it
+// locally and on origin.
 func DefaultBranchProblem(mainDir, branch string) (string, error) {
 	isDefault, err := IsDefaultBranch(mainDir, branch)
 	if err != nil || !isDefault {
@@ -417,19 +417,6 @@ func HasUncommittedChanges(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// HasUnpushedCommits reports whether the current branch has commits not on its
-// upstream. A branch with no upstream is treated as having unpushed work.
-func HasUnpushedCommits(dir string) (bool, error) {
-	if _, err := git(dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); err != nil {
-		return true, nil // no upstream configured
-	}
-	out, err := git(dir, "rev-list", "@{upstream}..HEAD", "--count")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) != "0", nil
-}
-
 // IsMergedInto reports whether branch is an ancestor of target in mainDir.
 // merge-base exits 1 for "not an ancestor"; any other failure (unknown ref,
 // corrupt repo) is returned as an error instead of reading as "not merged".
@@ -623,7 +610,7 @@ func commits(dir string, shas []string) ([]Commit, error) {
 //
 // Deliberately named for what it computes rather than for a caller: with
 // target = the default branch it yields un-integrated commits, but `push`
-// also calls it with target = origin/<default> to count unpushed ones.
+// also calls it with target = origin/<default> to count unpublished ones.
 func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 	base, err := git(mainDir, "merge-base", branch, target)
 	if err != nil {

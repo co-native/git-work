@@ -40,7 +40,7 @@ var Cmd = &cli.Command{
 		"asked, then removes the folder. <dir> is a bare name resolved under the work\n" +
 		"root, or a path. Checks and teardown run per repo, failures are collected at\n" +
 		"the end, and a re-run resumes exactly the repos still outstanding. --force\n" +
-		"overrides safety-check problems (uncommitted, unpushed, unmerged) but never\n" +
+		"overrides safety-check problems (uncommitted, unmerged) but never\n" +
 		"deletes files git-work did not create - that is --remove-all, which --force\n" +
 		"does NOT imply; without it such a folder is kept and the run still succeeds.\n" +
 		"Run it from outside the folder: done removes the folder.",
@@ -53,7 +53,7 @@ var Cmd = &cli.Command{
 		{Long: "delete-remote", Desc: "delete each repo's remote branch (prompted for interactively)"},
 		{Long: "force", Desc: "override safety-check problems; does not imply --remove-all"},
 		{Long: "remove-all", Desc: "remove the folder even when it holds files git-work did not create"},
-		{Long: "no-fetch", Desc: "skip fetching before the merged check"},
+		{Long: "no-fetch", Desc: "skip fetching before the containment check"},
 		{Long: "non-interactive", Desc: "skip the prompts and take the flags as given"},
 	},
 }
@@ -66,7 +66,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.BoolVar(&o.deleteRemote, "delete-remote", false, "delete remote branches")
 	fs.BoolVar(&o.force, "force", false, "override safety-check problems")
 	fs.BoolVar(&o.removeAll, "remove-all", false, "delete the work folder even when it contains files git-work did not create (--force does NOT imply this)")
-	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the merged check")
+	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the containment check")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "skip the TUI; use flags")
 	return fs
 }

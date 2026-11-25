@@ -62,9 +62,10 @@ per-tool contexts via a `CONTEXT-MAP.md`.
   missing from `origin/<default>` (patch equivalence) or from `origin/<branch>`
   (ancestry). The measure `push` scopes from. Local-only integration leaves commits
   integrated but still unpublished.
-- **Unpushed commits** - commits on a branch that are not on its `@{upstream}`; a branch
-  with no upstream counts as entirely unpushed. The measure `done`'s safety check uses. A
-  branch can be unpushed but have zero un-integrated commits, and vice versa.
+- **Unpushed commits** - commits on a branch that `origin/<branch>` does not have (plain
+  ancestry). The measure `push` uses for its branch-ahead leg. Distinct from _unpublished_
+  (which also counts work already on `origin/<default>`) and from _contained_. Teardown
+  gates on _contained_, not on this.
 - **Empty branch** - a work branch with zero un-integrated commits (nothing since
   branching from the default branch). `push` skips a branch with no unpublished commits
   unless `--allow-empty`.
