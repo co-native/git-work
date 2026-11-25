@@ -234,7 +234,7 @@ type InstructionsInput struct {
 	// a directory with no overlay, is fine.
 	OverlayDir string
 	// RepoOverlayDir holds <repo>.md fallbacks, normally
-	// config.RepoOverlayDir(). A repos-root overlay and a config-dir overlay
+	// config.RepoOverlayDir(). A repos-root overlay plus a config-dir overlay
 	// for the same repo is an error.
 	RepoOverlayDir string
 	// TicketID is empty for a ticketless work folder, which renders the
@@ -305,8 +305,8 @@ func appendOverlay(sb *strings.Builder, dir, file string) {
 }
 
 // appendRepoOverlay inlines one repo's overlay. The repos-root source follows
-// the instructions file name; the config-dir fallback is always <repo>.md.
-// Both existing is an error rather than a silent precedence choice, because
+// the instructions file name. The config-dir fallback is always <repo>.md.
+// Having both is an error rather than a silent precedence choice, because
 // either one is a deliberate operator edit.
 func appendRepoOverlay(sb *strings.Builder, reposRoot, repoOverlayDir, repo, file string) error {
 	rootPath := ""

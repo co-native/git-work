@@ -48,7 +48,7 @@ primary and act on the worktree.
 
 Each repo gets a full clone at `<work>/<repo>`, checked out on its work branch. The folder
 is self-contained and relocatable: state stores repo names and branches, not paths, and a
-full clone has no absolute worktree path. This is what lets a container mount just the
+full clone has no absolute worktree path. This is what lets a container mount only the
 work folder. There is no primary clone involved.
 
 `new --mode clone` resolves each repo's clone URL, default branch and ticket-matching
@@ -438,7 +438,7 @@ Each push runs `git push -u origin <branch>` from the repo's checkout (worktree 
 (`repo.PushBranchUpstream`), targeting the branch recorded in state - not whatever the
 worktree has checked out. `-u` is explicit so a first push establishes `@{upstream}`
 regardless of the operator's `push.autoSetupRemote` (`git status` and a later bare
-`git push` key off it). `-f`/`--force` adds `--force-with-lease` - never bare `--force`; a
+`git push` read it). `-f`/`--force` adds `--force-with-lease`, never bare `--force`. A
 lease rejection (the remote moved beyond our remote-tracking refs) is a failure to
 inspect, not something to override. Deliberately **no fetch** before pushing: the lease
 _is_ the remote-tracking refs, and fetching right before the push would weaken it. No
@@ -624,9 +624,9 @@ checks run, so the folder is untouched.
 
 Safety checks (per repo): uncommitted changes, a checkout whose branch disagrees with the
 recorded one, and whether the work branch is contained in the remote default branch (from
-`origin/HEAD`). Containment runs on every path, with or without delete flags: work that is
-not on the shared default branch blocks teardown, so a no-flag run cannot leave an
-unmerged branch behind unnoticed and a delete run cannot remove the only refs holding it.
+`origin/HEAD`). Containment runs on every path, with or without delete flags. Work that is
+not on the shared default branch blocks teardown. A no-flag run then cannot leave an
+unmerged branch behind unnoticed, and a delete run cannot remove the only refs holding it.
 Each repo is fetched first (unless `--no-fetch`), so a merge that landed on origin is
 visible. When the ancestry check says "not merged" it falls back to patch equivalence
 (`repo.IsPatchEquivalent`), so squash-merged branches count as merged (labeled
@@ -635,17 +635,16 @@ them). `IsPatchEquivalent` finishes with a `git merge-tree --write-tree` backsto
 merging the branch into the target produces the target's tree unchanged, the branch is
 contained even when it arrived as a mix of squashed and individually-cherry-picked commits
 (a shape the per-commit-cherry and single-squash-probe checks alone can't see); a
-conflicting merge, an old git without `--write-tree`, or any other failure falls back to
-the earlier signals rather than surfacing an error. `--force` remains the path for
-teardown of unmerged work. A no-flag run leaves the local branch in the primary after
-removing the checkout in worktree mode, and warns; in clone mode the branch goes with the
-clone. Teardown is worktree-then-branch per repo in worktree mode; in clone mode remote
-deletion happens before the clone is removed, because the clone is the only local
-repository that can run the push. Teardown is shared with `rm` via `internal/teardown`
-(`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is dropped from
-`.git-work.yaml` and saved immediately, so state stays honest through a partial or blocked
-teardown - a re-run resumes exactly the repos still outstanding, and the final repo count
-is captured before teardown mutates state.
+conflicting merge, a git without `--write-tree`, or any other failure falls back to the
+earlier signals rather than surfacing an error. `--force` remains the path for teardown of
+unmerged work. In worktree mode, teardown removes the worktree then the branch, per repo.
+A no-flag run leaves the branch in the primary and warns. In clone mode, the branch goes
+with the clone. Remote deletion happens before the clone is removed, because the clone is
+the only local repository that can run the push. Teardown is shared with `rm` via
+`internal/teardown` (`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is
+dropped from `.git-work.yaml` and saved immediately, so state stays honest through a
+partial or blocked teardown - a re-run resumes exactly the repos still outstanding, and
+the final repo count is captured before teardown mutates state.
 
 Leftover `integrate-*` and `agent-*` entries under `.worktrees` are a gate problem too:
 `done` reports them and aborts unless `--force`, which discards them after repo teardown
@@ -655,8 +654,8 @@ and prunes an empty agent directory.
 Containment, not the branch's upstream, decides. A branch's own remote can be stale or
 absent while its work is already on the default branch, and a branch can be pushed while
 none of it is merged. The check asks the question that matters for teardown: is this work
-on the shared default branch? A "no" is one problem on every path, and `--force` is the
-override. Patch equivalence is measured over the full merge-base..branch diff, so a branch
+on the shared default branch? A "no" is one problem on every path, and `--force` overrides
+it. Patch equivalence is measured over the full merge-base..branch diff, so a branch
 carrying commits beyond a squash merge is not contained and reports the same "not merged"
 problem.
 
@@ -666,11 +665,11 @@ before any teardown, and drive what happens to the folder at the end. No extra f
 `--remove-all`, removes the whole folder including any leftovers. Otherwise,
 interactively, after the delete-local/delete-remote prompts `done` lists the extra files
 and offers a 3-way `tui.Select`: **Delete** (proceed as `--remove-all` would), **Keep**
-(leave the files; state is still saved honestly per above), or **Cancel** (abort before
-any checks or teardown run). Non-interactively, `--remove-all` means Delete and its
-absence means Keep - the run tears down repos, keeps the folder and its leftover files,
-prints the list, and **exits 0** (this replaced an earlier hard error with no
-non-interactive way to keep the folder).
+(leave the files, and state is still saved honestly as described earlier), or **Cancel**
+(abort before any checks or teardown run). Non-interactively, `--remove-all` means Delete
+and its absence means Keep - the run tears down repos, keeps the folder and its leftover
+files, prints the list, and **exits 0** (a hard error would leave a non-interactive run
+with no way to keep the folder).
 
 ### `rm <repo> [flags]`
 
@@ -681,7 +680,7 @@ and `teardown.TeardownRepo` teardown as `done` (uncommitted/contained, `--force`
 override, checkout-then-branch order), scoped to that repo, then re-aggregates the
 `README.md` and instructions file managed blocks and the workspace file's folder list from
 the repos that remain. The rest of the work folder - other repos, `TICKET.md`, the state
-file itself - is left untouched; `rm` never removes the folder. Removing the last repo
+file itself - is left untouched. `rm` never removes the folder. Removing the last repo
 leaves an accurate zero-repo `.git-work.yaml` and regenerated `TICKET.md`, `README.md` and
 instructions file rather than an invisible or half-deleted folder.
 
@@ -711,10 +710,10 @@ record one, and `teardown` refuses to delete one - the latter not overridable by
 The guard exists because the default branch satisfies every other teardown safety check
 trivially, and does so _because_ it is the default branch. It is contained in
 `origin/HEAD` by definition, so the containment check passes. A worktree sitting on it
-agrees with state, so `WorktreeBranchProblem` passes. Nothing was dirty. The result was
-that `done --delete-local --delete-remote` on a work folder whose state recorded `main`
-would report zero problems and proceed to delete `main` locally and on origin - and every
-check that should have caught it was, correctly, saying yes.
+agrees with state, so `WorktreeBranchProblem` passes. Nothing is dirty. As a result,
+`done --delete-local --delete-remote` on a work folder whose state records `main` reports
+zero problems and proceeds to delete `main` locally and on origin, and every check that
+should catch it says yes.
 
 `repo.IsDefaultBranchFor` checks the recorded `repos[].default_branch` first, then
 `origin/HEAD`, and only falls back to the local HEAD for legacy worktree state with no
@@ -1019,7 +1018,7 @@ specifics, with the identity header first:
    `git work` rather than by hand. The clone text also covers full clones, `.worktrees/`,
    the plain-git rule for subagents, and the `git-lfs` requirement. They ship in the
    binary rather than being installed beside it so there is nothing to keep in sync per
-   machine and the text always matches the tool that wrote it; `git work refresh`
+   machine and the text always matches the tool that wrote it. `git work refresh`
    propagates an upgrade.
 3. **Operator overlay** - the optional `${XDG_CONFIG_HOME:-~/.config}/git-work/AGENTS.md`
    (in `config.OverlayDir()`), for guidance that applies to every work folder but is the
@@ -1038,8 +1037,8 @@ is ignored.
 
 Per-repo overlays have two sources: `<repos-root>/<repo>/AGENTS.md` (or `CLAUDE.md`, the
 other name as fallback) and `<config-dir>/repo-instructions/<repo>.md`. The repos-root
-source follows `instructions_file`; the config-dir source is always `<repo>.md`, so
-switching the setting never renames it. Both existing is an error naming both paths, not a
+source follows `instructions_file`. The config-dir source is always `<repo>.md`, so
+switching the setting never renames it. Having both is an error naming both paths, not a
 silent precedence choice. The operator overlay is looked up under the configured name
 first and the other name second, so switching `instructions_file` does not require the
 operator overlay to be renamed. One overlay per location is inlined. A leading block HTML
@@ -1077,12 +1076,12 @@ renamed in place, so a relocated folder works. Run it from outside the folder: a
 sitting inside it keeps a path that no longer exists, and Windows refuses the rename
 outright.
 
-| Input             | Folder        | Slug                   | Ticket     | Work branch       |
-| ----------------- | ------------- | ---------------------- | ---------- | ----------------- |
-| `<new-name>`      | the name      | name minus `<ticket>-` | unchanged  | `<ticket>-<slug>` |
-| `--ticket <id>`   | `<id>-<slug>` | unchanged              | the new id | `<id>-<slug>`     |
-| `--branch <name>` | unchanged     | unchanged              | unchanged  | the name          |
-| `--keep-branch`   | as above      | as above               | as above   | unchanged         |
+| Input             | Folder          | Slug                   | Ticket          | Work branch       |
+| ----------------- | --------------- | ---------------------- | --------------- | ----------------- |
+| `<new-name>`      | the name        | name minus `<ticket>-` | unchanged       | `<ticket>-<slug>` |
+| `--ticket <id>`   | `<id>-<slug>`   | unchanged              | the new id      | `<id>-<slug>`     |
+| `--branch <name>` | unchanged       | unchanged              | unchanged       | the name          |
+| `--keep-branch`   | as `<new-name>` | as `<new-name>`        | as `<new-name>` | unchanged         |
 
 The slug is the slugified remainder after the folder's ticket prefix, or the slugified
 name when the name carries no prefix. A ticketless folder is named by its slug, as
@@ -1164,7 +1163,7 @@ are not candidates there. The rules, in order:
 Resolution runs for every repo before anything is created (`repo.ResolveWorkBranches`), so
 a refusal reports all repos at once and leaves nothing to roll back. A `--branch` value
 spelled `origin/<name>` is a usage error: git would create a local branch literally named
-that, and the listings above are where the spelling comes from. There are no
+that, and the branch listings are where the spelling comes from. There are no
 `--reuse-existing`/`--always-new` flags: each pre-answered the picker for scripts, and
 `--branch` answers it more precisely.
 

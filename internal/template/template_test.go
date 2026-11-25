@@ -45,7 +45,7 @@ func TestMergeManagedBlockNoMarkers(t *testing.T) {
 
 func TestAggregateInstructions(t *testing.T) {
 	repos := t.TempDir()
-	// repo "alpha" has an overlay; "beta" does not
+	// repo "alpha" has an overlay, "beta" does not
 	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)
 	os.WriteFile(filepath.Join(repos, "alpha", "AGENTS.md"), []byte("alpha guidance\n"), 0o644)
 	os.MkdirAll(filepath.Join(repos, "beta"), 0o755)

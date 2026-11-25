@@ -1,13 +1,12 @@
 # git-work
 
-Git plugin to help developer workflow when working with multiple repositories in one unit
-of work.
+A Git plugin for one unit of work that spans several repositories.
 
 One change often spans several repos. Doing that by hand means a branch per repo, a
-checkout per repo, remembering which branch you used where, and - at the end - working out
-which of them are safe to delete. `git-work` makes that one unit: a **work folder**
-holding one checkout per participating repo - a linked worktree, or a self-contained full
-clone in clone mode - all on a shared branch, created and torn down as a set.
+checkout per repo, remembering which branch you used where, and at the end deciding which
+branches are safe to delete. `git-work` makes that one unit: a **work folder** holds one
+checkout per participating repo, all on a shared branch, and creates and tears them down
+as a set. A checkout is a linked worktree, or a self-contained full clone in clone mode.
 
 ```
 git work new PROJ-123 --repos api,web    # a folder with two checkouts, branches created
@@ -36,7 +35,7 @@ With a [Go toolchain](https://go.dev/dl/):
 go install github.com/co-native/git-work@latest
 ```
 
-The binary lands in `$(go env GOPATH)/bin`; make sure that is on your `PATH`. From a
+The binary lands in `$(go env GOPATH)/bin`. Make sure that is on your `PATH`. From a
 checkout, `make install` puts it in `~/.local/bin` instead (`go install` is the route on
 Windows, where the `Makefile` needs a POSIX shell).
 
@@ -44,7 +43,7 @@ Linux, macOS and Windows are all built and tested in CI. On Windows both `\` and
 as path separators, including in `paths.repos`/`paths.work`.
 
 **Requires** git 2.30 or newer. With git 2.38+ the teardown check additionally recognises
-a branch that was merged as a mix of squashed and cherry-picked commits; on older git that
+a branch that was merged as a mix of squashed and cherry-picked commits. On older git that
 one case degrades quietly.
 
 **Optional**, only for fetching ticket titles:
@@ -99,10 +98,10 @@ cd ~/dev/work
 git work done PROJ-123-add-auth    # safety-check, then tear down
 ```
 
-`git work done` will not delete anything it is not sure about: it checks each repo for
+`git work done` does not delete anything it is not sure about. It checks each repo for
 uncommitted changes and whether the branch's work is on the default branch (recognising
-squash merges); it fetches first, and refuses to tear down unmerged work without
-`--force`. It also refuses to touch files it did not create. Every command answers `-h`.
+squash merges). It fetches first and refuses to tear down unmerged work without `--force`.
+It refuses to touch files it did not create. Every command answers `-h`.
 
 ## Configuration
 
@@ -113,7 +112,7 @@ paths:
   repos: ~/dev/repos # where primary clones live
   work: ~/dev/work # where work folders live
 
-instructions_file: AGENTS.md # the agent instructions file generated per work folder; or CLAUDE.md
+instructions_file: AGENTS.md # the agent instructions file generated per work folder, or CLAUDE.md
 
 defaults:
   mode: clone # worktree (default) or clone for new work folders
@@ -138,7 +137,7 @@ Edit it with `git work config set paths.work ~/work`, or `git work config edit`.
 
 - [`DESIGN.md`](DESIGN.md) - the full command, config and layout reference, and the
   reasoning behind the behaviour that is not obvious.
-- [`CONTEXT.md`](CONTEXT.md) - glossary. Worth skimming first; terms like _un-integrated_,
+- [`CONTEXT.md`](CONTEXT.md) - glossary. Worth skimming first. Terms like _un-integrated_,
   _unpushed_ and _contained_ mean specific different things here.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) - what to run before a PR, and what to read before
   changing behaviour.
@@ -146,7 +145,7 @@ Edit it with `git work config set paths.work ~/work`, or `git work config edit`.
 ## Status
 
 Used daily by its author, but young and opinionated - it encodes one particular way of
-working. Issues and pull requests are welcome; no promises about response time.
+working. Issues and pull requests are welcome, with no promises about response time.
 
 ## License
 

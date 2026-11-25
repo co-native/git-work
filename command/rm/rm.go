@@ -86,7 +86,7 @@ func parseFlags(args []string) (*options, error) {
 	return o, nil
 }
 
-// Run executes `git work rm`; it prints any error to stderr and returns the
+// Run executes `git work rm`. It prints any error to stderr and returns the
 // process exit code.
 func Run(args []string) int {
 	if cli.Wanted(args) {
@@ -161,7 +161,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// TeardownRepo drops r from st and saves only on full success; on
+	// TeardownRepo drops r from st and saves only on full success. On
 	// failure st (and the on-disk state) is untouched, so stop here without
 	// re-aggregating the managed blocks.
 	failures := teardown.TeardownRepo(to, l, st, r, workDir)

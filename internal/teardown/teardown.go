@@ -16,7 +16,7 @@ import (
 )
 
 // Options selects which branches a teardown deletes and how safety checks
-// behave. Force overrides safety-check problems (and force-deletes worktrees);
+// behave. Force overrides safety-check problems (and force-deletes worktrees).
 // NoFetch skips the fetch before the containment check, so the check reads the
 // origin refs as of the last fetch.
 //
@@ -53,9 +53,9 @@ func Gate(problems []string, force bool) error {
 }
 
 // CheckRepo runs one repo's safety checks (uncommitted / drift / contained)
-// and returns this repo's problems. An error while RUNNING a check is a
+// and returns this repo's problems. An error while running a check is a
 // warning plus a counted problem (conservative), never a mid-check abort, so a
-// partially torn-down folder can still be processed; --force overrides
+// partially torn-down folder can still be processed. --force overrides
 // problems. A repo whose worktree is already gone is skipped.
 //
 // Containment is the gate on every path, with or without delete flags: the
@@ -69,7 +69,7 @@ func Gate(problems []string, force bool) error {
 // The repo is fetched first (unless NoFetch), so a merge that landed on origin
 // since the last fetch is visible without a separate refresh. In worktree mode
 // a no-flag run leaves the local branch in the primary after removing the
-// checkout, so a warning names it; in clone mode the branch goes with the
+// checkout, so a warning names it. In clone mode the branch goes with the
 // clone. Progress notes/warnings print to stderr.
 func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []string {
 	var problems []string
@@ -116,10 +116,10 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 	}
 
 	// Surface the default-branch refusal here too, after the fetch has had a
-	// chance to freshen origin/HEAD. TeardownRepo enforces it regardless; this
+	// chance to freshen origin/HEAD. TeardownRepo enforces it regardless. This
 	// is so the operator learns before any repo is torn down rather than
 	// discovering it as a mid-run failure. Worded to say --force will not help,
-	// since unlike every other problem here it genuinely will not.
+	// since unlike every other problem here it will not.
 	if o.DeleteLocal || o.DeleteRemote {
 		if isDefault, derr := repo.IsDefaultBranchFor(main, r.DefaultBranch, r.Branch); derr != nil {
 			warnProblem("%s: cannot determine the default branch: %v", r.Name, derr)
@@ -185,7 +185,7 @@ func CheckRepo(o Options, l layout.Layout, r state.Repo, workDir string) []strin
 
 // TeardownRepo removes r's worktree then (per flags) its local/remote branches
 // - strictly worktree-then-branch. Missing worktrees and already-deleted
-// branches are skipped with a note so teardown is idempotent. On FULL success
+// branches are skipped with a note so teardown is idempotent. On full success
 // for this repo (zero failures) it drops r from st and persists with
 // st.Save(workDir), so state stays honest even when other repos block or a
 // later run resumes. Returns this repo's failures. Progress notes print to
@@ -203,7 +203,7 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 	// A work branch is never a repo's default branch, and this is where that
 	// would cost the most - the deletions below remove it locally and on
 	// origin. Checked before the worktree is touched so a refusal leaves the
-	// repo exactly as it was, and deliberately NOT overridable by Force:
+	// repo exactly as it was, and deliberately not overridable by Force:
 	// --force exists for judgment calls about unmerged work, and deleting a
 	// repo's default branch is not a judgment call. `git work git <repo> --
 	// branch -D <name>` is the honest bypass. Only gated on the delete flags:
@@ -298,8 +298,8 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 			fmt.Fprintf(os.Stderr, "git-work: %s: local branch %s already deleted; skipping\n", r.Name, r.Branch)
 		default:
 			if err := repo.DeleteLocalBranch(main, r.Branch, o.Force); err != nil {
-				// `git branch -d` refuses a squash-merged branch just
-				// like the ancestry check does. The merged check
+				// `git branch -d` refuses a squash-merged branch, as the
+				// ancestry check does. The containment check
 				// accepts patch equivalence, so deletion must too:
 				// re-verify and force-delete.
 				if !o.Force && squashMergedIntoDefault(main, r.Branch) {
@@ -326,8 +326,8 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 		}
 	}
 
-	// Only a fully successful teardown drops the repo from state; a partial
-	// or blocked one leaves it listed so a re-run resumes precisely it.
+	// Only a fully successful teardown drops the repo from state. A partial or
+	// blocked one leaves it listed so a re-run resumes precisely it.
 	if len(failures) == 0 {
 		st.RemoveRepo(r.Name)
 		if err := st.Save(workDir); err != nil {
@@ -339,8 +339,8 @@ func TeardownRepo(o Options, l layout.Layout, st *state.State, r state.Repo, wor
 
 // squashMergedIntoDefault reports whether branch is patch-equivalent to the
 // remote default branch - the squash-merge case where `git branch -d`
-// refuses although the merged check passed. Errors read as "not
-// squash-merged"; the caller then reports the original delete failure.
+// refuses although the containment check passed. Errors read as "not
+// squash-merged". The caller then reports the original delete failure.
 func squashMergedIntoDefault(main, branch string) bool {
 	target, err := repo.RemoteDefaultRef(main)
 	if err != nil {

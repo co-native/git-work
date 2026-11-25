@@ -75,7 +75,7 @@ func setupWorkBranch(t *testing.T, l layout.Layout, workDir, name, origin string
 }
 
 // setupWorkBranchNoPush clones origin as the primary for name, adds a worktree
-// on a new work branch under workDir, and commits one change on it WITHOUT
+// on a new work branch under workDir, and commits one change on it without
 // pushing. Only the containment check can clear a branch like this. Returns the
 // worktree path.
 func setupWorkBranchNoPush(t *testing.T, l layout.Layout, workDir, name, origin string) string {
@@ -399,8 +399,7 @@ func TestCheckRepoEmptyBranchPassesWithoutDeleteFlags(t *testing.T) {
 
 func TestCheckRepoFastForwardedBranchWithStaleUpstreamPasses(t *testing.T) {
 	// Issue #4: origin/<branch> still points at the pre-merge tip, but the
-	// branch itself is now at origin/main. Containment, not the upstream,
-	// decides.
+	// branch itself is at origin/main. Containment, not the upstream, decides.
 	root := t.TempDir()
 	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
 	workDir := filepath.Join(l.WorkRoot, "PROJ-1-work")
@@ -514,7 +513,7 @@ func TestTeardownRepoPartialLeavesFailedRepoInState(t *testing.T) {
 
 func TestCheckRepoReportsBranchDrift(t *testing.T) {
 	// Teardown deletes r.Branch locally and remotely while the containment
-	// check measures r.Branch; a worktree on another branch means checking one
+	// check measures r.Branch. A worktree on another branch means checking one
 	// branch and deleting a different one, so it has to be a problem.
 	root := t.TempDir()
 	l := layout.Layout{ReposRoot: filepath.Join(root, "repos"), WorkRoot: filepath.Join(root, "work")}
@@ -546,7 +545,7 @@ func TestCheckRepoReportsBranchDrift(t *testing.T) {
 }
 
 func TestCheckRepoReportsBranchDriftRegardlessOfForce(t *testing.T) {
-	// CheckRepo always reports; --force is applied by the callers that consume
+	// CheckRepo always reports. --force is applied by the callers that consume
 	// the list (done.go's `if !o.force`), which is what makes drift bypassable
 	// like every other safety-check problem. Pin that layering: suppressing
 	// drift inside CheckRepo when Force is set would drop it from the report

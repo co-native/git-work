@@ -101,7 +101,7 @@ func TestIndexCoversEveryCommand(t *testing.T) {
 func TestEveryRegistryEntryIsReachable(t *testing.T) {
 	for _, e := range commands {
 		name := e.cmd.Name
-		// A subcommand entry (e.g. "repos clone") is typed by its alias.
+		// A subcommand entry (for example "repos clone") is typed by its alias.
 		if strings.Contains(name, " ") {
 			continue
 		}
@@ -151,7 +151,7 @@ func TestHelpForRouting(t *testing.T) {
 	}
 }
 
-// withDevNull runs fn with stdout and stderr pointed at /dev/null; these cases
+// withDevNull runs fn with stdout and stderr pointed at /dev/null. These cases
 // assert on the exit code, and the help text would otherwise flood the log.
 func withDevNull(t *testing.T, fn func() int) int {
 	t.Helper()
