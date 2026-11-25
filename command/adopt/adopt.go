@@ -10,12 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
 	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
+	"github.com/co-native/git-work/internal/naming"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
 	"github.com/co-native/git-work/internal/workfolder"
@@ -144,7 +144,7 @@ func adoptOne(w io.Writer, l layout.Layout, workDir, target string) error {
 	// Refuse to record the repo's default branch as a work branch. Recording is
 	// not itself destructive, so a repo whose default branch cannot be
 	// determined is a warning rather than a refusal - teardown re-checks before
-	// it deletes anything, which is where the cost actually lands.
+	// it deletes anything, which is where the cost lands.
 	if mode == layout.ModeClone {
 		if branch == defBranch {
 			return fmt.Errorf("%s: %s is the repo's default branch and cannot be a work branch; create one first (`git switch -c <name>`), or let `git work add` create it", target, branch)
@@ -318,25 +318,9 @@ func notManaged(target, gitDir, reposRoot string) error {
 // prefix bootstraps a ticketless state (mirroring `new --no-ticket`): the
 // folder name is the title and slug, and refresh writes no TICKET.md.
 func bootstrapState(folder, branch string) *state.State {
-	ticket, slug := inferTicket(folder)
+	ticket, slug := naming.InferTicket(folder)
 	if ticket == "" {
 		return &state.State{Title: folder, Slug: folder, Branch: branch, NoTicket: true}
 	}
 	return &state.State{TicketID: ticket, Title: ticket, Slug: slug, Branch: branch}
-}
-
-// ticketRe matches a leading ticket id: one or more "<word>-" segments
-// followed by an issue number, so multi-segment prefixes like "dev-tools-1"
-// work too.
-var ticketRe = regexp.MustCompile(`^((?:[A-Za-z][A-Za-z0-9]*-)+[0-9]+)(?:-(.+))?$`)
-
-// inferTicket splits a work-folder name into ticket id and slug: a leading
-// "<prefix>-<number>" is the ticket ("PROJ-3-git-work" -> "PROJ-3" +
-// "git-work", "dev-tools-12-fix" -> "dev-tools-12" + "fix"); a name without
-// one is not a ticket at all (empty ticket and slug - the ticketless case).
-func inferTicket(folder string) (ticket, slug string) {
-	if m := ticketRe.FindStringSubmatch(folder); m != nil {
-		return m[1], m[2]
-	}
-	return "", ""
 }

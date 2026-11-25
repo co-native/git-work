@@ -21,11 +21,12 @@ Each command package owns its own flag parsing. Shared building blocks live unde
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `config`     | Load/save the global config (YAML, or JSON by extension); defaults; the repo URL registry; dot-path key access (in `command/config`).                                                                                                                                                                                                                                                                                    |
 | `state`      | Per-work-folder metadata (`.git-work.yaml`/`.json`): checkout mode, per-repo default branches, read, write (atomic), and `FindUp` from the cwd.                                                                                                                                                                                                                                                                          |
+| `naming`     | Work-folder name derivation shared by `new`, `adopt` and `rename`: the slug form, the leading ticket id (`InferTicket`), the slug a folder name implies, the branch a rename derives, and folder-name validation.                                                                                                                                                                                                        |
 | `fileio`     | The file conventions `config` and `state` share: format by extension and the atomic temp-and-rename write.                                                                                                                                                                                                                                                                                                               |
-| `workfolder` | The preamble of every command run inside a work folder (`Load`: state from the cwd, config, resolved layout), the mode-aware `RepoDir`, the `.worktrees` cwd guard, and the shared `<repo> \| --all` scope resolution (`Scope`).                                                                                                                                                                                         |
+| `workfolder` | The preamble of every command run inside a work folder (`Load`: state from the cwd, config, resolved layout), the mode-aware `RepoDir`, the `.worktrees` cwd guard, the shared `<repo> \                                                                                                                                                                                                                                 |
 | `layout`     | Resolves on-disk paths from the repos/work roots (`RepoMain`, `WorkDir`, `Worktree`, `ListRepos`), the checkout mode type, and the reserved `.worktrees` paths. The primary clone folder is discovered by parsing the parent `.git` pointer file (`PrimaryDir`); a missing/malformed pointer is an error.                                                                                                                |
 | `repo`       | Git plumbing: clone, fetch, ff-only pull, add/remove/repair worktrees, remote branch probing, branch existence/merge/patch-equivalence checks, rebase-onto, branch deletion, branch resolution, HEAD classification (`ReadHead`), the integrate temp-worktree marker, LFS setup, and the shared worktree/state branch check (`WorktreeBranchProblem`).                                                                   |
-| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description.                                                                                                                                                                                                                                                                                                                 |
+| `provider`   | Resolve a ticket id to a provider and dispatch on its type (`jira`/`github`) to fetch title/description; `ResolveIdentity` is the sequence `new` and `rename` share.                                                                                                                                                                                                                                                     |
 | `template`   | Render the managed blocks of generated files (`TICKET.md`, `README.md`, the instructions file), including the mode-aware embedded work folder contract, the operator overlay, and the repos-root/config-dir per-repo overlays; the `folders` list of the VS Code workspace file, spliced into whatever the operator keeps in the rest of it; `WriteWorkFolder` is the one place the set of generated files is assembled. |
 | `tui`        | Interactive prompts: select, multi-select, input, confirm; TTY detection.                                                                                                                                                                                                                                                                                                                                                |
 | `teardown`   | Mode-aware per-repo safety checks (`CheckRepo`) and teardown (`TeardownRepo`), the `.worktrees` leftover scan, shared by `done` and `rm`; mutates and saves state as each repo is fully torn down.                                                                                                                                                                                                                       |
@@ -145,6 +146,7 @@ commands:
   new <ticket-id|name>              start a new work folder with worktrees or clones
   add                               add another repo to the current work folder
   adopt <dir>                       register an existing checkout dir in the current work folder
+  rename <dir> [<new-name>]         rename a work folder, its ticket and its work branches
   refresh                           freshen the ticket repos' defaults, re-render generated files
   changes <repo> | --all            list a work branch's un-integrated commits
   rebase <repo> | --all             freshen the defaults, rebase work branches onto them
@@ -185,7 +187,7 @@ review is what holds it:
   `git work git demo -- log -h` still forwards `-h` to git).
 - The bare word `help` is a help token **only** where it already occupies a subcommand
   slot - top level, `repo`, `config` - because leaf commands take names positionally and a
-  repo really can be called `help`.
+  repo can be called `help`.
 - Exit codes are uniform: **0** success (a help request is a success), **2** malformed
   invocation, **1** the invocation was fine and the work failed. A usage error prints the
   error and then the command's usage, on stderr.
@@ -383,17 +385,15 @@ implicit `--all` is not worth the keystroke it saves.
 
 Per in-scope repo: ff-only-pull the repo's default branch in its primary clone
 (explicitly, so a primary left on another branch still freshens the rebase target; a
-failed pull is a warning
+failed pull is a warning, and the rebase proceeds against the local default branch), then
+rebase the branch checked out in the repo's worktree onto the repo's default branch. Repos
+are processed independently; problems are collected and reported at the end (nonzero
+exit). A dirty worktree is skipped and reported as a problem. On conflict, that repo's
+rebase is left in progress for normal `git rebase --continue`/`git rebase --abort`
+resolution, and other repos still proceed.
 
-- the rebase proceeds against the local default branch), then rebase the branch checked
-  out in the repo's worktree onto the repo's default branch. Repos are processed
-  independently; problems are collected and reported at the end (nonzero exit). A dirty
-  worktree is skipped and reported as a problem. On conflict, that repo's rebase is left
-  in progress for normal `git rebase --continue`/`git rebase --abort` resolution - other
-  repos still proceed.
-
-`--no-pull` mirrors `refresh --no-pull`: the rebase still runs, just against whatever the
-local default branch already points at.
+`--no-pull` mirrors `refresh --no-pull`: the rebase still runs, against whatever the local
+default branch already points at.
 
 `-n`/`--dry-run` follows `integrate`'s model - the pull still happens (unless
 `--no-pull`), so the report reflects the same target a real run would use. Per repo it
@@ -422,13 +422,13 @@ and the local default branch - leg one's original reference - goes quiet the mom
 integrate runs, which skipped exactly the push that would first publish the branch of an
 operator who integrates before pushing. The local default branch stands in for leg one
 only when origin has no default branch at all (a local-only repo). The report counts leg
-two when non-empty, since that is what the push will actually transfer, and falls back to
-leg one (a first push, or the fully-pushed repo staying in scope to no-op via git's
-"Everything up-to-date", matching normal `git push`). A branch with nothing origin lacks -
-fully published, or fully integrated with its integration pushed - is skipped with a note
-unless `-e`/`--allow-empty`, which pushes it anyway (as a remote placeholder when new);
-the predicate applies uniformly - naming a repo does not bypass it. An untouched branch is
-an ancestor of origin's default, so it counts zero on both legs and `--all` cannot litter
+two when non-empty, since that is what the push transfers, and falls back to leg one (a
+first push, or the fully-pushed repo staying in scope to no-op via git's "Everything
+up-to-date", matching normal `git push`). A branch with nothing origin lacks - fully
+published, or fully integrated with its integration pushed - is skipped with a note unless
+`-e`/`--allow-empty`, which pushes it anyway (as a remote placeholder when new); the
+predicate applies uniformly - naming a repo does not bypass it. An untouched branch is an
+ancestor of origin's default, so it counts zero on both legs and `--all` cannot litter
 origin with placeholder branches.
 
 Each push runs `git push -u origin <branch>` from the repo's checkout (worktree or clone)
@@ -467,10 +467,10 @@ gets its own predicate: the commits in local `<default>` that are not on
 `origin/<default>` (`git cherry`, same patch-equivalence semantics as everywhere else).
 Zero means "nothing to push", skipped with a note unless `-e`/`--allow-empty`, which
 pushes anyway (git then reports "Everything up-to-date"). A missing `origin/<default>`
-cannot be measured, so the push simply proceeds and is reported as a new branch. Still
-**no fetch** first, consistent with the work-branch mode: a stale `origin/<default>` costs
-at most a redundant push attempt or a rejection that lands in the failure list, never a
-wrong ref.
+cannot be measured, so the push proceeds and is reported as a new branch. Still **no
+fetch** first, consistent with the work-branch mode: a stale `origin/<default>` costs at
+most a redundant push attempt or a rejection that lands in the failure list, never a wrong
+ref.
 
 `-f`/`--force` combined with `--main` is a **usage error**, not a silent no-op: a default
 branch is shared history and git-work never rewrites it. A rejection therefore points at
@@ -479,13 +479,13 @@ otherwise identical to the work-branch mode.
 
 ### `integrate <repo> | --all [flags]`
 
-Moves a work branch's un-integrated commits onto its repo's local default branch - by
-**fast-forward** where possible, cherry-pick otherwise. In clone mode the transfer runs in
-a transient `<work>/.worktrees/integrate-<repo>` linked worktree; a conflict leaves it in
-place and a later run resumes, see [Checkout modes](#checkout-modes). - as an alternative
-to a lossy `git merge --squash` integrating. Scope is one repo (`<repo>`) or every repo in
-the work folder (`-a`/`--all`); a leading-dash `--all` parses fine (unlike `done`'s
-parser, `integrate` doesn't reject a leading `-` first argument).
+Moves a work branch's un-integrated commits onto its repo's local default branch - as an
+alternative to a lossy `git merge --squash` integrating - by **fast-forward** where
+possible, cherry-pick otherwise. In clone mode the transfer runs in a transient
+`<work>/.worktrees/integrate-<repo>` linked worktree; a conflict leaves it in place and a
+later run resumes; see [Checkout modes](#checkout-modes). Scope is one repo (`<repo>`) or
+every repo in the work folder (`-a`/`--all`); a leading-dash `--all` parses fine (unlike
+`done`'s parser, `integrate` doesn't reject a leading `-` first argument).
 
 **Pre-flight is fully atomic across the whole scope, before any cherry-pick.** Per repo:
 fetch (unless `--no-fetch`), verify the primary clone is clean and on its default branch,
@@ -520,11 +520,10 @@ nonzero exit) so a dry run faithfully predicts "a real run would abort here" - b
 detail is still printed for every repo that got far enough to compute it, including repos
 tripping the 2+-commits guard (that violation fires after the commits are computed).
 
-Both modes list the un-integrated commits one per line (short SHA + subject, oldest first)
-
-- default output, no flag. A real run prints `integrating N onto <default>` plus the
-  detail before picking, then the existing `N integrated` summary (the counts can differ
-  when a pick turns out empty).
+Both modes list the un-integrated commits one per line (short SHA + subject, oldest
+first), default output, no flag. A real run prints `integrating N onto <default>` plus the
+detail before picking, then the existing `N integrated` summary (the counts can differ
+when a pick turns out empty).
 
 #### Fast-forward vs cherry-pick
 
@@ -539,11 +538,11 @@ branch to `origin/<default>`, so it asks about the same tip the transfer would m
 Transfer is then `git merge --ff-only` (`repo.FastForwardTo`) in the primary: a pointer
 move that cannot conflict and creates no new objects.
 
-That last part is the reason to prefer it. A cherry-pick rewrites the commits, so a work
+That is why a fast-forward is preferred. A cherry-pick rewrites the commits, so a work
 branch already pushed to origin ends up holding _different objects_ than the default
 branch with the same content - exactly the situation `done`'s patch-equivalence fallback
 exists to paper over. A fast-forward keeps the SHAs, so `done`'s merged check passes by
-plain ancestry and the pushed branch really does match.
+plain ancestry and the pushed branch matches.
 
 The `--multi` guard applies to **both** mechanisms. A fast-forward carries no per-commit
 risk, so the guard is not about mechanism there - it is about intent, and integrating
@@ -601,9 +600,9 @@ it precisely when it is needed.
 
 Failure handling is `done`'s model: a missing worktree is skipped with a note, per-repo
 failures are collected while the rest keep going, and the run exits nonzero if any repo
-did. Note that a nonzero exit is reported for _any_ git command that exits nonzero,
-including where that is a normal answer (`git diff --quiet` on a dirty tree) - git-work
-cannot tell those apart, so it reports the code and leaves the judgment to the operator.
+did. A nonzero exit is reported for _any_ git command that exits nonzero, including where
+that is a normal answer (`git diff --quiet` on a dirty tree) - git-work cannot tell those
+apart, so it reports the code and leaves the judgment to the operator.
 
 ### `done <dir> [flags]`
 
@@ -631,9 +630,9 @@ contained even when it arrived as a mix of squashed and individually-cherry-pick
 (a shape the per-commit-cherry and single-squash-probe checks alone can't see); a
 conflicting merge, an old git without `--write-tree`, or any other failure falls back to
 the earlier signals rather than surfacing an error. `--force` remains the path for
-genuinely unmerged teardown. In worktree mode teardown is worktree-then-branch per repo;
-in clone mode remote deletion happens before the clone is removed, because the clone is
-the only local repository that can run the push. Teardown is shared with `rm` via
+teardown of unmerged work. In worktree mode teardown is worktree-then-branch per repo; in
+clone mode remote deletion happens before the clone is removed, because the clone is the
+only local repository that can run the push. Teardown is shared with `rm` via
 `internal/teardown` (`CheckRepo`/`TeardownRepo`); each repo that's fully torn down is
 dropped from `.git-work.yaml` and saved immediately, so state stays honest through a
 partial or blocked teardown - a re-run resumes exactly the repos still outstanding, and
@@ -673,7 +672,7 @@ Removes one repo from the current work folder - `done` narrowed to a single repo
 inside a work folder (located via `state.FindUp`); `<repo>` must already be in
 `.git-work.yaml` or the command errors. Runs the same `teardown.CheckRepo` safety checks
 and `teardown.TeardownRepo` teardown as `done` (uncommitted/unpushed/merged-or-contained,
-`--force` to override, checkout-then-branch order), scoped to just that repo, then
+`--force` to override, checkout-then-branch order), scoped to that repo, then
 re-aggregates the `README.md` and instructions file managed blocks and the workspace
 file's folder list from the repos that remain. The rest of the work folder - other repos,
 `TICKET.md`, the state file itself - is left untouched; `rm` never removes the folder.
@@ -765,7 +764,7 @@ lets a config file keep the `~` the operator wrote: expanding on load would mean
 `config set` writes the resolved absolute path back, silently destroying the portability
 of a file synced across machines. `config get`/`config list` therefore show the raw value,
 and the built-in defaults are themselves stored in `~` form for the same reason. Error
-messages report the resolved path, since that is the directory actually searched.
+messages report the resolved path, since that is the directory searched.
 
 ### Structure
 
@@ -963,13 +962,17 @@ repos:
     branch: feature/PROJ-123
 ```
 
-`repos[].branch` records the branch actually checked out per repo (which may differ from
-the top-level `branch` when an existing branch was reused). State files written before
-that field existed fall back to the top-level `branch` on load - a best guess that
-`done`'s existence and merged checks gate before any deletion. State files written before
-`mode` load as worktree; an unknown mode is an error. `repos[].default_branch` is the
-target clone-mode `integrate`/`rebase`/`push --main` use, so a later remote default change
-cannot silently retarget in-flight work.
+`repos[].branch` records the branch checked out per repo (which may differ from the
+top-level `branch` when an existing branch was reused). State files written before that
+field existed fall back to the top-level `branch` on load - a best guess that `done`'s
+existence and merged checks gate before any deletion. State files written before `mode`
+load as worktree; an unknown mode is an error. `repos[].default_branch` is the target
+clone-mode `integrate`/`rebase`/`push --main` use, so a later remote default change cannot
+silently retarget in-flight work.
+
+`title`, `slug`, `branch` and `ticket_id` are written once, at `new`/`adopt` time, and
+change only through [`git work rename`](#renaming-a-work-folder). `refresh` re-renders the
+generated files from state but never derives a new name.
 
 ## Generated files
 
@@ -1048,6 +1051,77 @@ top-level object is refused with an error naming the file and a remedy, because 
 it would discard work in progress. The file is in `template.GeneratedFiles`, so `done`
 deletes it with the rest.
 
+## Renaming a work folder
+
+`git work rename` is the only command that moves a folder. It changes one or more names in
+one operation: the directory, the state slug, the ticket, and the work branch together
+with every repo that sits on it.
+
+`<dir>` resolves like `done`: a bare name under the work root, or a path. The folder is
+renamed in place, so a relocated folder works. Run it from outside the folder: a shell
+sitting inside it keeps a path that no longer exists, and Windows refuses the rename
+outright.
+
+| Input             | Folder        | Slug                   | Ticket     | Work branch       |
+| ----------------- | ------------- | ---------------------- | ---------- | ----------------- |
+| `<new-name>`      | the name      | name minus `<ticket>-` | unchanged  | `<ticket>-<slug>` |
+| `--ticket <id>`   | `<id>-<slug>` | unchanged              | the new id | `<id>-<slug>`     |
+| `--branch <name>` | unchanged     | unchanged              | unchanged  | the name          |
+| `--keep-branch`   | as above      | as above               | as above   | unchanged         |
+
+The slug is the slugified remainder after the folder's ticket prefix, or the slugified
+name when the name carries no prefix. A ticketless folder is named by its slug, as
+`new -n` creates it, so its new name must already be a slug unless `--ticket` is given;
+the refusal names the slug to use.
+
+A rename does not derive a branch name the operator set by hand. A folder rename moves
+each repo whose recorded branch equals the folder's branch; a repo on a hand-named branch
+(from `--branch` at `new`/`add` time, or `adopt`) stays where it is and is reported. When
+the folder's own branch was hand-named, a folder rename refuses unless `--branch` or
+`--keep-branch` says what the branch becomes: no rule derives it, and the refusal names
+both flags.
+
+`--ticket` is how a folder created with `--no-ticket` gains a ticket, and how an existing
+ticket changes. The id is resolved and its details fetched exactly as `new` does: a failed
+fetch is a warning and the display id stands in for the title. The folder and branch
+become `<ticket>-<slug>`, `no_ticket` is cleared, the provider is recorded, and
+`TICKET.md` is written. A ticket-shaped prefix in `<new-name>` must match the folder's
+ticket, or the refusal points at `--ticket`. There is no `--no-ticket`: removing the
+association is `done` plus `new`.
+
+`--remote` also renames the branch on origin, and only when origin already had the old
+name: push the new name with `-u`, then delete the old one. Without it the upstream keeps
+pointing at `origin/<old>`, exactly as a plain `git branch -m` leaves it, and
+`git work push` repoints it on the next push. A hosting service reads push-then-delete as
+a branch deletion, so open pull requests against the old name are closed; that is why the
+flag is opt-in.
+
+Gates run across the whole folder before anything changes:
+
+- the target folder is free (a case-only rename is allowed by file identity);
+- `.worktrees` holds no entries, so no subagent or integrate checkout moves under its
+  owner;
+- every worktree agrees with the branch state records (`repo.WorktreeBranchProblem`);
+- every target branch is free locally and is not that repo's default branch;
+- with `--remote`, `origin/<new>` is absent and the remote answers.
+
+One violation means nothing changed.
+
+The folder move is last. Branch renames, the state update and the `--remote` rename happen
+first, and each repo's state is saved as its branch moves, so a failure leaves a folder
+that `FindUp` still finds with honest state. Repeating the command finishes the job: repos
+already on the target branch are skipped, a folder already under the new name is not moved
+again, and a rename that changes nothing prints `Nothing to rename` and exits 0. A failure
+after the move (worktree repair, the workspace file) leaves the folder under its final
+name and is reported; a failed push or remote delete names the exact command that finishes
+it.
+
+Worktree mode needs a repair after the move: each primary records its worktree's absolute
+path, so `git worktree repair` runs for every repo. A case-only rename on a
+case-insensitive filesystem needs no repair, because the old path still resolves;
+`git worktree list` in the primary therefore keeps the old capitalization in that case.
+Clone mode needs neither: the clones move with the folder.
+
 ## Branch resolution
 
 When `new`/`add` includes a repo, `repo.ResolveWorkBranch` decides which branch its
@@ -1082,13 +1156,13 @@ that, and the listings above are where the spelling comes from. There are no
 ## Worktree/state branch agreement
 
 `repos[].branch` in the state file is written once, at `new`/`add`/`adopt` time. Nothing
-re-syncs it when a branch is switched by hand, so it can drift from what a worktree
-actually has checked out. That matters because the commands split on which one they read:
-`push` and `integrate` act on the **recorded** branch, `rebase` acts on the
-**checked-out** one, and `done`/`rm` safety-check the worktree's HEAD
-(`repo.HasUnpushedCommits`) but delete the recorded branch - locally and on the remote.
-Left alone, drift means publishing a branch you are not looking at, integrating commits
-you did not mean to, or deleting a branch other than the one that was checked.
+re-syncs it when a branch is switched by hand, so it can drift from what a worktree has
+checked out. That matters because the commands split on which one they read: `push` and
+`integrate` act on the **recorded** branch, `rebase` acts on the **checked-out** one, and
+`done`/`rm` safety-check the worktree's HEAD (`repo.HasUnpushedCommits`) but delete the
+recorded branch - locally and on the remote. Left alone, drift means publishing a branch
+you are not looking at, integrating commits you did not mean to, or deleting a branch
+other than the one that was checked.
 
 So every command that acts on the recorded branch refuses while the two disagree, via one
 shared check - `repo.WorktreeBranchProblem` - so the wording and the remedy read the same
@@ -1115,7 +1189,7 @@ The check distinguishes three failures, because they need different advice:
 A conflicted merge, cherry-pick, or revert keeps the branch checked out, so those never
 look detached and are not probed.
 
-One consequence worth noting: `state.Load` migrates pre-`Repo.Branch` state files by
-copying the top-level branch into every repo, which its own comment calls a best guess.
-For an old folder where a repo reused a differently-named existing branch, that guess is
-wrong - and this check is what surfaces it, with re-adopt as the fix.
+One consequence: `state.Load` migrates pre-`Repo.Branch` state files by copying the
+top-level branch into every repo, which its own comment calls a best guess. For an old
+folder where a repo reused a differently-named existing branch, that guess is wrong - and
+this check is what surfaces it, with re-adopt as the fix.

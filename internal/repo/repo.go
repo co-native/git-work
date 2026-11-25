@@ -108,7 +108,7 @@ func IsDefaultBranchFor(dir, recorded, branch string) (bool, error) {
 // A repo with no origin/HEAD (local-only, or a remote that never set it) has no
 // upstream default to read, so the primary's own branch stands in: a primary
 // sits on its default branch by design. That keeps "cannot tell" from becoming
-// "cannot delete anything" for repos that simply have no remote.
+// "cannot delete anything" for repos that have no remote.
 func IsDefaultBranch(mainDir, branch string) (bool, error) {
 	if ref, err := RemoteDefaultRef(mainDir); err == nil {
 		return strings.TrimPrefix(strings.TrimSpace(ref), "origin/") == branch, nil
@@ -665,7 +665,7 @@ const (
 	CherryPickConflict                         // left in progress for manual resolution
 )
 
-// CherryPick applies commit sha onto the branch currently checked out in dir.
+// CherryPick applies commit sha onto the branch checked out in dir.
 // A clean apply is CherryPickOK. Conflict detection mirrors rebaseInProgress:
 // it stats `git rev-parse --git-path CHERRY_PICK_HEAD` (a single-commit pick
 // leaves no sequencer dir). On failure with CHERRY_PICK_HEAD present, a clean
@@ -721,7 +721,7 @@ func PushRejected(err error) bool {
 // PushBranchUpstream runs `git push -u origin <branch>` from dir (a worktree),
 // so a first push establishes @{upstream} regardless of the operator's
 // push.autoSetupRemote setting. forceWithLease adds --force-with-lease - never
-// bare --force: a lease rejection (the remote moved beyond our remote-tracking
+// bare --force: a lease rejection (the remote moved beyond the remote-tracking
 // refs) surfaces as an error for the caller to report.
 func PushBranchUpstream(dir, branch string, forceWithLease bool) error {
 	args := []string{"push", "-u"}
@@ -997,6 +997,16 @@ func matchingBranches(names []string, ticketID string) ([]Candidate, error) {
 	return matches, nil
 }
 
+// RenameBranch renames the local branch from to to. It runs in dir, which may
+// be the worktree holding the branch, since `git branch -m` updates the HEAD
+// of the worktree that has it checked out. The upstream configuration is left
+// pointing at the old remote ref, exactly as a plain `git branch -m` leaves it;
+// moving that is the caller's decision.
+func RenameBranch(dir, from, to string) error {
+	_, err := git(dir, "branch", "-m", from, to)
+	return err
+}
+
 // DeleteLocalBranch deletes a local branch (force when not merged).
 func DeleteLocalBranch(mainDir, branch string, force bool) error {
 	flag := "-d"
@@ -1039,6 +1049,19 @@ func refExists(mainDir, ref string) (bool, error) {
 	return err == nil, err
 }
 
+// CheckBranchName reports whether git accepts branch as a branch name, using
+// check-ref-format so the answer is git's own rather than a reimplementation.
+// An empty value (flag not given) passes.
+func CheckBranchName(branch string) error {
+	if branch == "" {
+		return nil
+	}
+	if _, _, err := gitStatus("", "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("%q is not a valid branch name", branch)
+	}
+	return nil
+}
+
 // CheckBranchArg rejects a --branch value spelled as a remote-tracking ref.
 // Git would happily create a local branch literally named origin/<x>, a
 // well-known trap, and the listings that suggest --branch show remote-only
@@ -1060,6 +1083,22 @@ func LocalBranchExists(mainDir, branch string) (bool, error) {
 // after a fetch --prune).
 func RemoteBranchExists(mainDir, branch string) (bool, error) {
 	return refExists(mainDir, "refs/remotes/origin/"+branch)
+}
+
+// RemoteBranchExistsOnOrigin reports whether origin/<branch> exists on the
+// remote itself, not in remote-tracking refs that are only as fresh as the last
+// fetch. `git ls-remote --exit-code` exits 2 for "no matching ref"; any other
+// nonzero status (offline, no origin) is a real error. The fully qualified
+// pattern matters: a bare name would also match origin/<branch>/x.
+func RemoteBranchExistsOnOrigin(dir, branch string) (bool, error) {
+	_, code, err := gitStatus(dir, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
+	if code == 2 {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // PruneWorktrees drops stale worktree registrations (e.g. after a worktree

@@ -87,20 +87,6 @@ func captureOutput(t *testing.T, f func()) (string, string) {
 	return string(out), string(errOut)
 }
 
-func TestSlugify(t *testing.T) {
-	cases := map[string]string{
-		"Fix login redirect":      "fix-login-redirect",
-		"  Trailing & symbols!! ": "trailing-symbols",
-		"CamelCase Words":         "camelcase-words",
-		"already-a-slug":          "already-a-slug",
-	}
-	for in, want := range cases {
-		if got := slugify(in); got != want {
-			t.Errorf("slugify(%q) = %q want %q", in, got, want)
-		}
-	}
-}
-
 func TestParseFlags(t *testing.T) {
 	o, err := parseFlags([]string{"PROJ-7", "--repos", "a,b", "--branch", "feat-x", "--non-interactive"})
 	if err != nil {
