@@ -215,8 +215,8 @@ var workFolderWorktreeDoc string
 var workFolderCloneDoc string
 
 // InstructionsInput is everything AggregateInstructions needs. It is a struct
-// rather than a parameter list because the two overlay sources pushed it past
-// the point where positional arguments stayed readable.
+// rather than a parameter list because the overlay sources pushed it past the
+// point where positional arguments stayed readable.
 type InstructionsInput struct {
 	// Mode selects the embedded work folder contract: worktree or clone.
 	Mode layout.Mode
@@ -225,15 +225,16 @@ type InstructionsInput struct {
 	// under the other name is the fallback, so a switch of the setting does
 	// not require the overlays to be renamed.
 	File string
-	// ReposRoot is where per-repo overlays are looked up
-	// (<ReposRoot>/<repo>/<File>).
+	// ReposRoot is the repos root. It holds the optional repos-root-wide
+	// overlay (<ReposRoot>/<File>) and is where per-repo overlays are looked up
+	// (<ReposRoot>/<repo>/<File>). Empty reads neither.
 	ReposRoot string
 	// OverlayDir is the directory holding the optional operator-level overlay
 	// inlined for every work folder, normally config.OverlayDir(). Empty, or
 	// a directory with no overlay, is fine.
 	OverlayDir string
 	// RepoOverlayDir holds <repo>.md fallbacks, normally
-	// config.RepoOverlayDir(). A repos-root overlay and a config-dir overlay
+	// config.RepoOverlayDir(). A repos-root overlay plus a config-dir overlay
 	// for the same repo is an error.
 	RepoOverlayDir string
 	// TicketID is empty for a ticketless work folder, which renders the
@@ -250,9 +251,10 @@ type InstructionsInput struct {
 // instructions file.
 //
 // Section order is fixed: the folder's identity header, then git-work's own work
-// folder contract, then the operator's overlay, then one section per repo with
-// that repo's overlay inlined. General rules precede repo specifics, and the
-// header stays first so the block still opens by naming the folder.
+// folder contract, then the operator's overlay, then the repos-root overlay,
+// then one section per repo with that repo's overlay inlined. General rules
+// precede repo specifics, and the header stays first so the block still opens by
+// naming the folder.
 func AggregateInstructions(in InstructionsInput) (string, error) {
 	file := in.File
 	if file == "" {
@@ -272,6 +274,9 @@ func AggregateInstructions(in InstructionsInput) (string, error) {
 	appendFile(&sb, doc)
 	if in.OverlayDir != "" {
 		appendOverlay(&sb, in.OverlayDir, file)
+	}
+	if in.ReposRoot != "" {
+		appendOverlay(&sb, in.ReposRoot, file)
 	}
 
 	for _, r := range in.Repos {
@@ -300,8 +305,8 @@ func appendOverlay(sb *strings.Builder, dir, file string) {
 }
 
 // appendRepoOverlay inlines one repo's overlay. The repos-root source follows
-// the instructions file name; the config-dir fallback is always <repo>.md.
-// Both existing is an error rather than a silent precedence choice, because
+// the instructions file name. The config-dir fallback is always <repo>.md.
+// Having both is an error rather than a silent precedence choice, because
 // either one is a deliberate operator edit.
 func appendRepoOverlay(sb *strings.Builder, reposRoot, repoOverlayDir, repo, file string) error {
 	rootPath := ""

@@ -97,6 +97,17 @@ func TestRenderShape(t *testing.T) {
 	}
 }
 
+func TestIssuesURLOnlyOnIndex(t *testing.T) {
+	want := "Report issues at " + IssuesURL
+	index := Index("git work", "git work <command>", []*Command{sample})
+	if !strings.HasSuffix(index, want) {
+		t.Errorf("index does not end with %q:\n%s", want, index)
+	}
+	if strings.Contains(sample.Render(), want) {
+		t.Errorf("per-command help should not carry the issue tracker:\n%s", sample.Render())
+	}
+}
+
 // Every flag description must start in the same column, including the
 // automatically appended -h/--help row and the long-only and value-taking
 // flags whose labels are shaped differently.

@@ -1,10 +1,10 @@
 # git-work
 
-`git-work` binary; manages multi-repo work via git worktrees. Installs to `~/.local/bin`
-so git dispatches `git work <cmd>`. [`DESIGN.md`](DESIGN.md) is the single home for
-semantics and the reasoning behind them - command reference, config schema, storage
-layout, state file. [`CONTEXT.md`](CONTEXT.md) is the glossary. This file is the map plus
-the invariants; when the two disagree, `DESIGN.md` wins.
+`git-work` manages multi-repo work with git worktrees. It installs to `~/.local/bin` so
+git dispatches `git work <cmd>`. [`DESIGN.md`](DESIGN.md) is the single home for semantics
+and the reasoning behind them - command reference, config schema, storage layout, state
+file. [`CONTEXT.md`](CONTEXT.md) is the glossary. This file is the map plus the
+invariants; when the two disagree, `DESIGN.md` wins.
 
 ## Layout
 
@@ -26,7 +26,7 @@ the invariants; when the two disagree, `DESIGN.md` wins.
 ```sh
 make build            # -> dist/git-work, version stamped from git describe
 make test             # go test ./...
-make fmt               # deno fmt (markdown, 90 cols) + gofmt
+make fmt              # deno fmt (markdown, 90 cols) + gofmt
 make fmt-check         # both, without rewriting
 make release-check     # validate .goreleaser.yaml (requires goreleaser)
 make release-snapshot  # local snapshot archives (requires goreleaser)
@@ -48,14 +48,15 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
   Exit codes are 0 success, 2 malformed invocation, 1 the work failed. Usage text lives in
   a `cli.Command` descriptor, and `clitest.Check` fails the build if a flag is registered
   without being documented or documented without being registered. Never declare
-  `-h`/`--help` in a descriptor or on a `FlagSet` - the renderer appends it.
+  `-h`/`--help` in a descriptor or on a `FlagSet` - the renderer appends it. The top-level
+  help index ends with the issue tracker URL (`cli.IssuesURL`).
 
 - **A work branch is never a repo's default branch.** `new`/`add`/`adopt` refuse to record
   it; `teardown` refuses to delete it and `--force` does not override that. Every other
-  teardown safety check is trivially satisfied by the default branch - it is merged into
-  `origin/HEAD` by definition, has an upstream with nothing unpushed, and agrees with a
-  worktree sitting on it - so this guard is the only thing standing between
-  `done --delete-local --delete-remote` and deleting `main` locally and on origin.
+  teardown safety check is trivially satisfied by the default branch - it is contained in
+  `origin/HEAD` by definition, and agrees with a worktree sitting on it - so this guard is
+  the only thing standing between `done --delete-local --delete-remote` and deleting
+  `main` locally and on origin.
 
 - **A work folder has one checkout mode, recorded in state.** `worktree` uses primary
   clones and linked worktrees; `clone` uses full clones and no repos root. `new --mode`
@@ -71,7 +72,7 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
   `origin/HEAD`; the local checked-out-branch fallback is only for legacy worktree state.
   A remote default moving later must not silently retarget in-flight work.
 
-- **Per-repo overlays have one source.** A repos-root overlay and a config-dir
+- **Per-repo overlays have one source.** Having both a repos-root overlay and a config-dir
   `repo-instructions/<repo>.md` overlay for the same repo is an error, not a precedence
   choice.
 
@@ -115,4 +116,4 @@ do not belong in the binary. `DESIGN.md` covers the assembly order and the two o
 ## Style
 
 Prose wraps at 90 columns (`make fmt-md`). No em dashes - plain `-`. Errors name a remedy,
-not just a diagnosis; every refusal in `command/adopt` is the model.
+not only a diagnosis. Every refusal in `command/adopt` is the model.

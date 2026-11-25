@@ -416,7 +416,7 @@ func TestAddReusesExistingBranch(t *testing.T) {
 			t.Fatalf("clone %s: %v\n%s", name, err, out)
 		}
 	}
-	// beta already has the work branch (e.g. from earlier work on the ticket)
+	// beta already has the work branch (for example from earlier work on the ticket)
 	sh(t, filepath.Join(reposRoot, "beta", "main"), "git", "branch", "PROJ-3-foo")
 
 	if out, err := gwRun(t, bin, home, env,
@@ -444,7 +444,7 @@ func TestAddReusesExistingBranch(t *testing.T) {
 }
 
 // add refuses a ticket-matching branch non-interactively, creating no
-// worktree and leaving state untouched; --branch then reuses it.
+// worktree and leaving state untouched. --branch then reuses it.
 func TestAddReusesTicketMatchedBranch(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	for _, name := range []string{"alpha", "beta"} {
@@ -453,7 +453,7 @@ func TestAddReusesTicketMatchedBranch(t *testing.T) {
 			t.Fatalf("clone %s: %v\n%s", name, err, out)
 		}
 	}
-	// beta has a branch matching the ticket, but NOT named like the work branch
+	// beta has a branch matching the ticket, but not named like the work branch
 	sh(t, filepath.Join(reposRoot, "beta", "main"), "git", "branch", "feature/PROJ-4")
 
 	if out, err := gwRun(t, bin, home, env,
@@ -609,7 +609,7 @@ func TestTicketlessAdoptRefreshRebaseSquashDone(t *testing.T) {
 	}
 
 	// Adopt: a beta worktree added by hand (outside git-work) is registered
-	// into the folder's state; nothing moves, nothing is rewritten in git.
+	// into the folder's state. Nothing moves, nothing is rewritten in git.
 	betaMain := filepath.Join(reposRoot, "beta", "main")
 	sh(t, betaMain, "git", "worktree", "add", "-b", "side-quest", filepath.Join(workDir, "beta"))
 	out, err := gwRun(t, bin, workDir, env, "adopt", "beta")
@@ -644,7 +644,7 @@ func TestTicketlessAdoptRefreshRebaseSquashDone(t *testing.T) {
 	sh(t, seed, "git", "push", "-q", "origin", "main")
 
 	// Refresh: pulls the ticket primaries (ff-only) before re-rendering, and
-	// the re-rendered README now lists the adopted beta repo.
+	// the re-rendered README lists the adopted beta repo.
 	out, err = gwRun(t, bin, workDir, env, "refresh")
 	if err != nil {
 		t.Fatalf("refresh: %v\n%s", err, out)
@@ -695,7 +695,7 @@ func TestTicketlessAdoptRefreshRebaseSquashDone(t *testing.T) {
 	// The upstream commit must now be an ancestor of the work branch.
 	sh(t, wtAlpha, "git", "merge-base", "--is-ancestor", upstream, "HEAD")
 
-	// Publish both branches so done sees no unpushed work.
+	// Publish both branches so the remote deletion below has branches to remove.
 	sh(t, wtAlpha, "git", "push", "-q", "-u", "origin", "my-feature")
 	sh(t, filepath.Join(workDir, "beta"), "git", "push", "-q", "-u", "origin", "side-quest")
 
@@ -759,6 +759,79 @@ func TestDoneResumableAfterPartialTeardown(t *testing.T) {
 	}
 }
 
+func TestDoneNoFlagsRequiresMergedWork(t *testing.T) {
+	t.Run("merged: warns and keeps the branch", func(t *testing.T) {
+		bin, home, reposRoot, workRoot, env := newTestEnv(t)
+		origin := makeOriginIn(t, home, "alpha")
+		if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+			t.Fatalf("clone: %v\n%s", err, out)
+		}
+		if out, err := gwRun(t, bin, home, env,
+			"new", "PROJ-20", "--repos", "alpha", "--branch", "PROJ-20-x", "--non-interactive"); err != nil {
+			t.Fatalf("new: %v\n%s", err, out)
+		}
+		workDir := filepath.Join(workRoot, "PROJ-20-proj-20")
+		wt := filepath.Join(workDir, "alpha")
+		sh(t, wt, "git", "config", "user.email", "t@t.t")
+		sh(t, wt, "git", "config", "user.name", "t")
+		os.WriteFile(filepath.Join(wt, "work.txt"), []byte("x\n"), 0o644)
+		sh(t, wt, "git", "add", "work.txt")
+		sh(t, wt, "git", "commit", "-qm", "work")
+		sh(t, wt, "git", "push", "-q", "-u", "origin", "PROJ-20-x")
+
+		// Fast-forward origin main to the work branch: contained by ancestry.
+		seed := filepath.Join(home, "seed-alpha")
+		sh(t, seed, "git", "fetch", "-q", "origin")
+		sh(t, seed, "git", "merge", "-q", "--ff-only", "origin/PROJ-20-x")
+		sh(t, seed, "git", "push", "-q", "origin", "main")
+
+		out, err := gwRun(t, bin, home, env, "done", "PROJ-20-proj-20", "--non-interactive")
+		if err != nil {
+			t.Fatalf("done should succeed on merged work: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "left in place") {
+			t.Errorf("done should warn that the branch stays, got:\n%s", out)
+		}
+		main := filepath.Join(reposRoot, "alpha", "main")
+		if got := strings.TrimSpace(shOut(t, main, "git", "branch", "--list", "PROJ-20-x")); got == "" {
+			t.Errorf("local branch PROJ-20-x should survive a no-flag teardown")
+		}
+		if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+			t.Errorf("work folder not removed")
+		}
+	})
+
+	t.Run("unmerged: blocks and keeps the folder", func(t *testing.T) {
+		bin, home, _, workRoot, env := newTestEnv(t)
+		origin := makeOriginIn(t, home, "alpha")
+		if out, err := gwRun(t, bin, home, env, "clone", origin, "alpha"); err != nil {
+			t.Fatalf("clone: %v\n%s", err, out)
+		}
+		if out, err := gwRun(t, bin, home, env,
+			"new", "PROJ-21", "--repos", "alpha", "--branch", "PROJ-21-x", "--non-interactive"); err != nil {
+			t.Fatalf("new: %v\n%s", err, out)
+		}
+		workDir := filepath.Join(workRoot, "PROJ-21-proj-21")
+		wt := filepath.Join(workDir, "alpha")
+		sh(t, wt, "git", "config", "user.email", "t@t.t")
+		sh(t, wt, "git", "config", "user.name", "t")
+		os.WriteFile(filepath.Join(wt, "work.txt"), []byte("x\n"), 0o644)
+		sh(t, wt, "git", "add", "work.txt")
+		sh(t, wt, "git", "commit", "-qm", "work")
+
+		out, err := gwRun(t, bin, home, env, "done", "PROJ-21-proj-21", "--non-interactive")
+		if err == nil {
+			t.Fatalf("done should block unmerged work, got:\n%s", out)
+		}
+		if !strings.Contains(out, "not merged into origin/main") {
+			t.Errorf("done should name the unmerged branch, got:\n%s", out)
+		}
+		if _, err := os.Stat(workDir); err != nil {
+			t.Errorf("work folder removed despite the block: %v", err)
+		}
+	})
+}
+
 func TestDoneRemovalGuard(t *testing.T) {
 	bin, home, _, workRoot, env := newTestEnv(t)
 	origin := makeOriginIn(t, home, "alpha")
@@ -772,9 +845,9 @@ func TestDoneRemovalGuard(t *testing.T) {
 	workDir := filepath.Join(workRoot, "PROJ-6-proj-6")
 	os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("keep me\n"), 0o644)
 
-	// Without --remove-all, a leftover file no longer dead-ends the run:
-	// done tears the repo down, keeps the folder + honest state, and reports
-	// the kept files (--force must NOT imply --remove-all).
+	// Without --remove-all, a leftover file no longer dead-ends the run.
+	// done tears the repo down, keeps the folder and the honest state, and
+	// reports the kept files (--force must not imply --remove-all).
 	out, err := gwRun(t, bin, home, env, "done", "PROJ-6-proj-6", "--non-interactive", "--force")
 	if err != nil {
 		t.Fatalf("done should keep (not error on) a folder with leftovers, got:\n%s\nerr: %v", out, err)
@@ -938,7 +1011,7 @@ func TestCloneModeRefreshRebaseIntegrate(t *testing.T) {
 		t.Errorf("local main = %q, want the refreshed commit", got)
 	}
 	if got := strings.TrimSpace(shOut(t, clone, "git", "merge-base", "--is-ancestor", "main", "PROJ-3-x")); got != "" {
-		// command exits nonzero on failure; shOut would have failed
+		// command exits nonzero on failure. shOut would have failed
 	}
 
 	if out, err := gwRun(t, bin, workDir, env, "integrate", "alpha", "--push"); err != nil {
@@ -1077,7 +1150,8 @@ func TestCloneModeRelocation(t *testing.T) {
 	sh(t, clone, "git", "commit", "-qm", "moved")
 
 	// done removes the folder, so running it from inside is refused before any
-	// teardown. This is the Windows failure the old test used to hit.
+	// teardown. This refusal prevents the Windows failure mode, where the
+	// process cannot remove its own working directory.
 	if out, err := gwRun(t, bin, oldDir, env, "done", oldDir, "--non-interactive"); err == nil || !strings.Contains(out, "refusing to tear down") {
 		t.Fatalf("done from inside the folder = %v, want a refusal:\n%s", err, out)
 	}
@@ -1139,8 +1213,8 @@ func TestCloneModeRmForceCleansFolderLeftovers(t *testing.T) {
 	}
 }
 
-// renameGW returns a helper that runs git-work and fails the test on error.
-func renameGW(t *testing.T, bin string, env []string) func(dir string, args ...string) string {
+// gwMust returns a helper that runs git-work and fails the test on error.
+func gwMust(t *testing.T, bin string, env []string) func(dir string, args ...string) string {
 	t.Helper()
 	return func(dir string, args ...string) string {
 		t.Helper()
@@ -1191,7 +1265,7 @@ func TestRenameWorkFolder(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
 	ob := makeOriginIn(t, home, "beta")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "clone", ob, "beta")
@@ -1288,14 +1362,14 @@ func TestRenameWorkFolder(t *testing.T) {
 	}
 }
 
-// Clone mode has no primary, so the move needs no worktree repair; the clones
+// Clone mode has no primary, so the move needs no worktree repair. The clones
 // travel with the folder. --keep-branch renames the folder and slug and
 // leaves the branch where it is.
 func TestRenameCloneModeAndKeepBranch(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	origin := makeOriginIn(t, home, "alpha")
 	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "new", "PROJ-4", "--repos", "alpha", "--non-interactive")
 	oldDir := filepath.Join(workRoot, "PROJ-4-proj-4")
@@ -1312,7 +1386,7 @@ func TestRenameCloneModeAndKeepBranch(t *testing.T) {
 		t.Errorf("clone branch = %q, want PROJ-4-clone", got)
 	}
 
-	// The folder, slug and VS Code file move; the branch stays.
+	// The folder, slug and VS Code file move. The branch stays.
 	gw(home, "rename", "PROJ-4-clone", "PROJ-4-kept", "--keep-branch")
 	keptDir := filepath.Join(workRoot, "PROJ-4-kept")
 	st, err := state.Load(keptDir)
@@ -1338,7 +1412,7 @@ func TestRenameCloneModeAndKeepBranch(t *testing.T) {
 func TestRenameTicketlessAddsTicket(t *testing.T) {
 	bin, home, _, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "-n", "Spike Harness", "--repos", "alpha", "--non-interactive")
@@ -1388,7 +1462,7 @@ func TestRenameTicketlessAddsTicket(t *testing.T) {
 func TestRenameRemote(t *testing.T) {
 	bin, home, _, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "PROJ-5", "--repos", "alpha", "--branch", "PROJ-5-old", "--non-interactive")
@@ -1421,7 +1495,7 @@ func TestRenameRemote(t *testing.T) {
 func TestRenameRefusals(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "PROJ-1", "--repos", "alpha", "--non-interactive")
@@ -1485,5 +1559,61 @@ func TestRenameRefusals(t *testing.T) {
 	}
 	if localBranchExists(t, filepath.Join(reposRoot, "alpha", "main"), "PROJ-1-next") {
 		t.Error("a refusal renamed a branch")
+	}
+}
+
+// A file at the repos root lands in every folder's instructions file, between
+// the operator overlay and the per-repo sections, and follows instructions_file
+// with the other name as the fallback.
+func TestReposRootOverlay(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	gw := gwMust(t, bin, env)
+
+	gw(home, "clone", origin, "alpha")
+	os.WriteFile(filepath.Join(reposRoot, "AGENTS.md"), []byte("repos-root guidance\n"), 0o644)
+	gw(home, "new", "-n", "overlay-probe", "--repos", "alpha", "--non-interactive")
+	workDir := filepath.Join(workRoot, "overlay-probe")
+
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(workDir, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return string(data)
+	}
+	if agents := read("AGENTS.md"); !strings.Contains(agents, "repos-root guidance") {
+		t.Fatalf("repos-root overlay missing from the generated file:\n%s", agents)
+	}
+
+	// General rules come first: operator overlay, then repos-root, then repos.
+	cfgDir := filepath.Join(home, ".config", "git-work")
+	if err := os.WriteFile(filepath.Join(cfgDir, "AGENTS.md"), []byte("operator guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw(workDir, "refresh", "--no-pull")
+	agents := read("AGENTS.md")
+	at := -1
+	for _, section := range []string{"operator guidance", "repos-root guidance", "## alpha (./alpha)"} {
+		i := strings.Index(agents, section)
+		if i < 0 {
+			t.Fatalf("section %q missing:\n%s", section, agents)
+		}
+		if i < at {
+			t.Fatalf("section %q is out of order:\n%s", section, agents)
+		}
+		at = i
+	}
+
+	// The fallback name is read too: rename the file, switch the setting, and
+	// the next render picks it up under the new instructions file name.
+	if err := os.Rename(filepath.Join(reposRoot, "AGENTS.md"), filepath.Join(reposRoot, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	gw(home, "config", "set", "instructions_file", "CLAUDE.md")
+	gw(workDir, "refresh", "--no-pull")
+	if claude := read("CLAUDE.md"); !strings.Contains(claude, "repos-root guidance") {
+		t.Errorf("repos-root CLAUDE.md fallback missing after the switch:\n%s", claude)
 	}
 }

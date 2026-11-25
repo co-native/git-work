@@ -14,7 +14,7 @@ import (
 	"github.com/co-native/git-work/internal/layout"
 )
 
-// git runs a git command in dir and returns its stdout; a nonzero exit is an
+// git runs a git command in dir and returns its stdout. A nonzero exit is an
 // error carrying git's stderr.
 func git(dir string, args ...string) (string, error) {
 	out, _, err := gitStatus(dir, args...)
@@ -41,9 +41,9 @@ func gitStatus(dir string, args ...string) (out string, code int, err error) {
 	return outb.String(), 0, nil
 }
 
-// RemoteDefaultRef returns the remote default branch ref (e.g. "origin/main")
-// from origin/HEAD. There is no fallback: an unset origin/HEAD is an error
-// the caller surfaces as a warning.
+// RemoteDefaultRef returns the remote default branch ref (for example
+// "origin/main") from origin/HEAD. There is no fallback: an unset origin/HEAD
+// is an error the caller surfaces as a warning.
 func RemoteDefaultRef(mainDir string) (string, error) {
 	out, err := git(mainDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err != nil {
@@ -79,7 +79,7 @@ func DefaultBranchFor(dir, recorded string) (string, error) {
 }
 
 // IsDefaultBranchFor is the mode-aware default-branch guard. A recorded value
-// wins; origin/HEAD is checked next; the local-HEAD fallback is only used for
+// wins. origin/HEAD is checked next. The local-HEAD fallback is only used for
 // legacy worktree state with no recorded value. The fallback must not run for
 // clone mode, where the only checkout is the work branch and would otherwise
 // name itself the default.
@@ -124,10 +124,10 @@ func IsDefaultBranch(mainDir, branch string) (bool, error) {
 // the repo at mainDir, or "" when it may. Callers prefix it with the repo name.
 //
 // A work branch is never a repo's default branch, because every teardown safety
-// check is trivially satisfied by it: the default branch is merged into
-// origin/HEAD by definition, has an upstream with nothing unpushed, and agrees
-// with a worktree sitting on it. Nothing else stands between
-// `done --delete-local --delete-remote` and deleting it locally and on origin.
+// check is trivially satisfied by it: the default branch is contained in
+// origin/HEAD by definition, and agrees with a worktree sitting on it. Nothing
+// else stands between `done --delete-local --delete-remote` and deleting it
+// locally and on origin.
 func DefaultBranchProblem(mainDir, branch string) (string, error) {
 	isDefault, err := IsDefaultBranch(mainDir, branch)
 	if err != nil || !isDefault {
@@ -191,7 +191,8 @@ func Clone(url, repoDir string, extraOpts []string) (err error) {
 
 // DefaultBranchName returns the default branch name of a clone: the upstream
 // default from origin/HEAD (which `git clone` sets), falling back to the
-// local HEAD when the remote has no HEAD (e.g. an empty or local-only repo).
+// local HEAD when the remote has no HEAD (for example an empty or local-only
+// repo).
 func DefaultBranchName(dir string) (string, error) {
 	if ref, err := RemoteDefaultRef(dir); err == nil {
 		return strings.TrimPrefix(ref, "origin/"), nil
@@ -203,8 +204,8 @@ func DefaultBranchName(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// CurrentBranch returns the branch checked out in dir (the symbolic HEAD);
-// a detached HEAD is an error.
+// CurrentBranch returns the branch checked out in dir (the symbolic HEAD). A
+// detached HEAD is an error.
 func CurrentBranch(dir string) (string, error) {
 	out, err := git(dir, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
@@ -229,7 +230,7 @@ func (r PullResult) String() string {
 	return "already up to date"
 }
 
-// moved runs act and reports whether ref in dir points elsewhere afterwards.
+// moved runs act, then reports whether ref in dir points elsewhere afterward.
 func moved(dir, ref string, act func() error) (PullResult, error) {
 	before, err := git(dir, "rev-parse", ref)
 	if err != nil {
@@ -248,7 +249,7 @@ func moved(dir, ref string, act func() error) (PullResult, error) {
 	return PullFastForwarded, nil
 }
 
-// PullFFOnly fast-forwards the current branch in dir from its upstream; a
+// PullFFOnly fast-forwards the current branch in dir from its upstream. A
 // pull that would need a merge or rebase (a diverged branch) fails instead
 // of touching the tree. On success the result says whether HEAD moved.
 func PullFFOnly(dir string) (PullResult, error) {
@@ -260,7 +261,7 @@ func PullFFOnly(dir string) (PullResult, error) {
 
 // PullBranchFFOnly fast-forwards branch in dir from origin. When branch is
 // the checked-out branch this is a plain ff-only pull (working tree
-// included); when the clone sits on another branch (or a detached HEAD) the
+// included). When the clone sits on another branch (or a detached HEAD) the
 // branch ref is fast-forwarded via `git fetch origin <branch>:<branch>`
 // instead, which never touches the working tree - so pulling a primary's
 // default branch keeps freshening the rebase/merge target even when the
@@ -300,7 +301,7 @@ func Fetch(dir string) error {
 }
 
 // AddWorktree adds a worktree at path. If create is true a new branch `branch`
-// is created (optionally from startPoint, default current HEAD); otherwise the
+// is created (optionally from startPoint, default current HEAD). Otherwise the
 // existing branch is checked out.
 func AddWorktree(mainDir, path, branch, startPoint string, create bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -333,7 +334,7 @@ func AddTrackingWorktree(mainDir, path, branch string) error {
 }
 
 // Worktree is one entry of `git worktree list`: the checkout path and its
-// branch (short name; empty when the HEAD is detached).
+// branch (short name, empty when the HEAD is detached).
 type Worktree struct {
 	Path   string
 	Branch string
@@ -375,8 +376,8 @@ func CommonGitDir(dir string) (string, error) {
 }
 
 // CoreWorktree returns the repo's core.worktree config value, or "" when
-// unset (`git config --get` exits 1 for a missing key; any other failure is
-// a real error).
+// unset (`git config --get` exits 1 for a missing key. Any other failure is a
+// real error).
 func CoreWorktree(dir string) (string, error) {
 	out, code, err := gitStatus(dir, "config", "--get", "core.worktree")
 	if code == 1 {
@@ -417,21 +418,8 @@ func HasUncommittedChanges(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// HasUnpushedCommits reports whether the current branch has commits not on its
-// upstream. A branch with no upstream is treated as having unpushed work.
-func HasUnpushedCommits(dir string) (bool, error) {
-	if _, err := git(dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); err != nil {
-		return true, nil // no upstream configured
-	}
-	out, err := git(dir, "rev-list", "@{upstream}..HEAD", "--count")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) != "0", nil
-}
-
 // IsMergedInto reports whether branch is an ancestor of target in mainDir.
-// merge-base exits 1 for "not an ancestor"; any other failure (unknown ref,
+// merge-base exits 1 for "not an ancestor". Any other failure (unknown ref,
 // corrupt repo) is returned as an error instead of reading as "not merged".
 func IsMergedInto(mainDir, branch, target string) (bool, error) {
 	_, code, err := gitStatus(mainDir, "merge-base", "--is-ancestor", branch, target)
@@ -454,17 +442,17 @@ func IsMergedInto(mainDir, branch, target string) (bool, error) {
 //     integrated one by one, rebased, cherry-picked, or fast-forwarded - so the
 //     branch is contained. This survives target advancing past the merge with
 //     follow-up commits (patch-ids of the original commits still match), but
-//     it does NOT catch a squash merge: the branch's individual commits have
+//     it does not catch a squash merge: the branch's individual commits have
 //     no counterpart to the single squashed commit.
 //
 //  2. Squash: the whole branch collapsed into one commit whose diff equals the
 //     branch's combined change. Squashing branch's changes into a temporary
-//     dangling commit (never referenced; gc collects it) and asking `git
+//     dangling commit (never referenced, and gc collects it) and asking `git
 //     cherry` whether target has a patch-equivalent commit catches this, but
 //     misses shape 1 when the merge left more than one commit or target moved
 //     on afterward. The two are complementary, so both are tried.
 //
-// A final backstop (mergeAbsorbedInto) catches the MIX shape neither cherry
+// A final backstop (mergeAbsorbedInto) catches the mixed shape neither cherry
 // path recognizes - some commits squashed together, others applied
 // individually - via an in-memory three-way merge that absorbs cleanly into
 // target's tree.
@@ -500,8 +488,8 @@ func IsPatchEquivalent(mainDir, branch, target string) (bool, error) {
 		return false, err
 	}
 	if strings.TrimSpace(tree) == strings.TrimSpace(baseTree) {
-		// Net-zero branch: its commits sum to an empty diff (e.g. a change
-		// followed by its revert). An empty probe commit would confuse
+		// Net-zero branch: its commits sum to an empty diff (for example a
+		// change followed by its revert). An empty probe commit would confuse
 		// `git cherry` (it cannot patch-id an empty diff and reports it as
 		// unmerged), but a branch with no effective changes is trivially
 		// contained.
@@ -524,7 +512,7 @@ func IsPatchEquivalent(mainDir, branch, target string) (bool, error) {
 
 	// Final backstop: an in-memory three-way merge that absorbs cleanly into
 	// target's tree means the branch's content is already fully present even
-	// as a MIX of squashed and individually-applied commits - a shape neither
+	// as a mix of squashed and individually-applied commits - a shape neither
 	// cherry path recognizes (PROJ-3 api).
 	return mergeAbsorbedInto(mainDir, branch, target)
 }
@@ -559,10 +547,10 @@ func cherryFullyMerged(cherryOut string) bool {
 // mergeAbsorbedInto reports whether merging branch into target contributes
 // nothing: an in-memory three-way merge (git merge-tree --write-tree, git
 // >=2.38) whose result tree equals target's tree. merge-tree exits 1 on
-// conflict, and this never bubbles any failure: a conflict, a too-old git
-// without --write-tree, or any other error all report (false, nil) so the
-// caller falls back to the other signals. A bubbled error would reach done's
-// warnProblem and add a spurious problem to a genuinely-unmerged branch.
+// conflict, and this never bubbles any failure: a conflict, a git without
+// --write-tree, or any other error all report (false, nil), so the caller
+// falls back to the other signals. A bubbled error would reach done's
+// warnProblem and add a spurious problem to an unmerged branch.
 func mergeAbsorbedInto(mainDir, branch, target string) (bool, error) {
 	tree, err := git(mainDir, "merge-tree", "--write-tree", target, branch)
 	if err != nil {
@@ -623,7 +611,7 @@ func commits(dir string, shas []string) ([]Commit, error) {
 //
 // Deliberately named for what it computes rather than for a caller: with
 // target = the default branch it yields un-integrated commits, but `push`
-// also calls it with target = origin/<default> to count unpushed ones.
+// also calls it with target = origin/<default> to count unpublished ones.
 func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 	base, err := git(mainDir, "merge-base", branch, target)
 	if err != nil {
@@ -641,7 +629,7 @@ func CommitsNotIn(mainDir, branch, target string) ([]Commit, error) {
 // `git rev-list` ancestry, oldest first. Unlike CommitsNotIn it does no
 // patch-equivalence filtering: a rebased or amended branch holds the same
 // patches under new SHAs, and the ref still needs a push to move, so those
-// commits must count. CommitsNotIn answers "is the content in target";
+// commits must count. CommitsNotIn answers "is the content in target".
 // CommitsAhead answers "does target's ref need updating".
 //
 // Callers pass the two refs in the order their question states them, so both
@@ -671,9 +659,9 @@ const (
 // leaves no sequencer dir). On failure with CHERRY_PICK_HEAD present, a clean
 // worktree means the pick was empty - the patch is already present - so
 // CherryPick clears the in-progress state with `git cherry-pick --skip` and
-// reports CherryPickEmpty; a dirty worktree is a real conflict left in
-// progress (CherryPickConflict). Any other failure is an error. After a
-// CherryPickOK or CherryPickEmpty return the repo is NOT mid-sequence; only
+// reports CherryPickEmpty. A dirty worktree is a real conflict left in
+// progress (CherryPickConflict). Any other failure is an error. After
+// CherryPickOK or CherryPickEmpty, the repo is not mid-sequence. Only
 // CherryPickConflict leaves it in progress.
 func CherryPick(dir, sha string) (CherryPickStatus, error) {
 	_, err := git(dir, "cherry-pick", sha)
@@ -740,7 +728,7 @@ func PushBranchUpstream(dir, branch string, forceWithLease bool) error {
 //
 // Unlike a cherry-pick this creates no new objects: the commits keep their
 // identities, so a work branch already pushed to origin matches the default
-// branch exactly afterwards, and `done`'s merged check passes by plain
+// branch exactly afterward, and `done`'s containment check passes by plain
 // ancestry instead of falling back to patch equivalence.
 func FastForwardTo(dir, branch string) error {
 	_, err := git(dir, "merge", "--ff-only", branch)
@@ -840,7 +828,7 @@ const (
 type Head struct {
 	State     HeadState
 	Branch    string // the branch, when State is HeadOnBranch
-	Operation string // e.g. "rebase", when State is HeadInOperation
+	Operation string // for example "rebase", when State is HeadInOperation
 	Remedy    string // how to finish or undo Operation
 }
 
@@ -865,7 +853,7 @@ func ReadHead(dir string) (Head, error) {
 	if err == nil {
 		return Head{State: HeadOnBranch, Branch: strings.TrimSpace(out)}, nil
 	}
-	// symbolic-ref also fails when dir is not a repository at all; probing
+	// symbolic-ref also fails when dir is not a repository at all. Probing
 	// the git dir below surfaces that as a real error rather than letting it
 	// masquerade as a detached HEAD.
 	names := make([]string, len(detachingOps))
@@ -915,7 +903,7 @@ func WorktreeBranchProblem(wt, want string) (string, error) {
 // RepairWorktrees repairs worktree administrative files and back-pointers
 // after the primary clone (or a worktree) moved (`git worktree repair`).
 // Pass the current paths of moved worktrees so their .git back-pointers are
-// rewritten; with no paths only the primary-side links are repaired.
+// rewritten. With no paths only the primary-side links are repaired.
 func RepairWorktrees(mainDir string, worktreePaths ...string) error {
 	args := append([]string{"worktree", "repair"}, worktreePaths...)
 	_, err := git(mainDir, args...)
@@ -924,7 +912,7 @@ func RepairWorktrees(mainDir string, worktreePaths ...string) error {
 
 // Candidate is an existing branch that could serve as a repo's work branch.
 type Candidate struct {
-	Branch string // the local branch name, i.e. what a worktree checks out
+	Branch string // the local branch name, that is, what a worktree checks out
 	Remote bool   // exists only as origin/<Branch>
 }
 
@@ -1000,8 +988,8 @@ func matchingBranches(names []string, ticketID string) ([]Candidate, error) {
 // RenameBranch renames the local branch from to to. It runs in dir, which may
 // be the worktree holding the branch, since `git branch -m` updates the HEAD
 // of the worktree that has it checked out. The upstream configuration is left
-// pointing at the old remote ref, exactly as a plain `git branch -m` leaves it;
-// moving that is the caller's decision.
+// pointing at the old remote ref, exactly as a plain `git branch -m` leaves
+// it. Moving that is the caller's decision.
 func RenameBranch(dir, from, to string) error {
 	_, err := git(dir, "branch", "-m", from, to)
 	return err
@@ -1040,7 +1028,7 @@ func DeleteRemoteBranchURL(url, branch string) error {
 }
 
 // refExists reports whether a fully-qualified ref exists. show-ref exits 1
-// for "no such ref"; any other failure is a real error.
+// for "no such ref". Any other failure is a real error.
 func refExists(mainDir, ref string) (bool, error) {
 	_, code, err := gitStatus(mainDir, "show-ref", "--verify", "--quiet", ref)
 	if code == 1 {
@@ -1087,7 +1075,7 @@ func RemoteBranchExists(mainDir, branch string) (bool, error) {
 
 // RemoteBranchExistsOnOrigin reports whether origin/<branch> exists on the
 // remote itself, not in remote-tracking refs that are only as fresh as the last
-// fetch. `git ls-remote --exit-code` exits 2 for "no matching ref"; any other
+// fetch. `git ls-remote --exit-code` exits 2 for "no matching ref". Any other
 // nonzero status (offline, no origin) is a real error. The fully qualified
 // pattern matters: a bare name would also match origin/<branch>/x.
 func RemoteBranchExistsOnOrigin(dir, branch string) (bool, error) {
@@ -1101,8 +1089,8 @@ func RemoteBranchExistsOnOrigin(dir, branch string) (bool, error) {
 	return true, nil
 }
 
-// PruneWorktrees drops stale worktree registrations (e.g. after a worktree
-// directory was deleted out from under git).
+// PruneWorktrees drops stale worktree registrations (for example after a
+// worktree directory was deleted out from under git).
 func PruneWorktrees(mainDir string) error {
 	_, err := git(mainDir, "worktree", "prune")
 	return err
@@ -1114,9 +1102,9 @@ func CherryPickInProgress(dir string) (bool, error) {
 }
 
 // IntegrateResume describes what a leftover clone-mode integrate worktree
-// means. Resumed is true when one was present and clean; Completed is true when
-// its HEAD moved past the base recorded before the transfer, i.e. the operator
-// finished the cherry-pick. An aborted pick leaves HEAD at the base.
+// means. Resumed is true when one was present and clean. Completed is true when
+// its HEAD moved past the base recorded before the transfer, that is, the
+// operator finished the cherry-pick. An aborted pick leaves HEAD at the base.
 type IntegrateResume struct {
 	Resumed   bool
 	Completed bool
@@ -1175,8 +1163,8 @@ func ReadIntegrateMarker(dir string) (string, error) {
 // PrepareIntegrateWorktree checks a possible clone-mode integrate checkout
 // before a new one is created. A path that is absent is fine. A pick still in
 // progress, or uncommitted work, is refused with the path in the message. A
-// clean leftover from an interrupted run is removed and reported as resumed;
-// its marker and HEAD decide whether the pick was completed or aborted.
+// clean leftover from an interrupted run is removed and reported as resumed.
+// Its marker and HEAD decide whether the pick was completed or aborted.
 func PrepareIntegrateWorktree(cloneDir, path string) (IntegrateResume, error) {
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		return IntegrateResume{}, nil

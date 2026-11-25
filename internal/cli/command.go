@@ -5,7 +5,7 @@
 //
 //   - `-h` and `--help` are identical and mean the same thing everywhere: print
 //     this command's usage to stdout and exit 0. They are recognised anywhere in
-//     the argument list, scanning stops at the first `--`.
+//     the argument list, and scanning stops at the first `--`.
 //   - the bare word `help` is a help token only where it already occupies a
 //     subcommand slot (top level, `repos`, `config`). Leaf commands take names
 //     as positionals, so `git work rm help` addresses a repo called `help`.
@@ -27,7 +27,7 @@ import (
 )
 
 // Flag describes one flag for help purposes. Short and Long are given without
-// dashes ("a", "all"); either may be empty. Arg is the value placeholder for a
+// dashes ("a", "all"). Either may be empty. Arg is the value placeholder for a
 // non-boolean flag ("<names>") and is empty for booleans.
 type Flag struct {
 	Short string
@@ -45,8 +45,8 @@ type Command struct {
 	// Short is the one-line description used in an index listing. Lowercase,
 	// no trailing period.
 	Short string
-	// Args is the positional sketch shown beside Name in an index listing,
-	// e.g. "<repo> | --all". Empty when the command takes no positionals.
+	// Args is the positional sketch shown beside Name in an index listing, for
+	// example "<repo> | --all". Empty when the command takes no positionals.
 	Args string
 	// Synopsis holds one or more literally typeable usage lines, each
 	// including the "git work " prefix.
@@ -65,6 +65,11 @@ type Command struct {
 // helpFlag is appended to every rendered flag list, so no descriptor declares
 // it and every command documents it identically.
 var helpFlag = Flag{Short: "h", Long: "help", Desc: "show this help"}
+
+// IssuesURL is the project's only issue tracker. The top-level index ends with
+// it, so an agent that hits a problem knows where to report it without reading
+// the README, and a copy of the binary cannot point somewhere else.
+const IssuesURL = "https://github.com/co-native/git-work/issues"
 
 // label renders a flag's left-hand column: "-a, --all", "    --main", "-n".
 // Long-only flags are indented by the width of a short form so the long forms
@@ -131,8 +136,8 @@ func (c *Command) Render() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// SubName is the last word of a subcommand's Name, i.e. how it is typed within
-// its group: "config set" -> "set".
+// SubName is the last word of a subcommand's Name, that is, how it is typed
+// within its group: "config set" -> "set".
 func (c *Command) SubName() string {
 	if i := strings.LastIndex(c.Name, " "); i >= 0 {
 		return c.Name[i+1:]
@@ -163,14 +168,15 @@ func indexBody(cmds []*Command, pad string) string {
 	return b.String()
 }
 
-// Index renders a top-level listing: a title line, the command table, and a
-// pointer at per-command help. Used for `git work` with no arguments and for
-// `git work help`.
+// Index renders a top-level listing: a title line, the command table, a
+// pointer to per-command help, and the issue tracker. Used for `git work` with
+// no arguments and for `git work help`.
 func Index(title, usageLine string, cmds []*Command) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\nusage: %s\n\ncommands:\n", title, usageLine)
 	b.WriteString(indexBody(cmds, "  "))
 	fmt.Fprintf(&b, "\nRun `%s` for a command's flags and detail.\n", "git work <command> -h")
+	fmt.Fprintf(&b, "\nReport issues at %s\n", IssuesURL)
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -209,7 +215,7 @@ func NewFlagSet(name string) *flag.FlagSet {
 // anywhere on the line: leading-dash tokens are partitioned out and parsed
 // against fs, which must already register --all onto all. It deliberately
 // does not reject a leading `-` first argument, so `push --all` parses. The
-// result is the named repo, or "" when --all was given; exactly one of the two
+// result is the named repo, or "" when --all was given. Exactly one of the two
 // is guaranteed.
 func ParseScope(fs *flag.FlagSet, all *bool, args []string) (string, error) {
 	var flagArgs, positional []string
@@ -239,7 +245,7 @@ func ParseScope(fs *flag.FlagSet, all *bool, args []string) (string, error) {
 }
 
 // CommaList splits a comma-separated flag value into its non-empty, trimmed
-// entries; an empty value yields nil.
+// entries. An empty value yields nil.
 func CommaList(s string) []string {
 	var out []string
 	for _, v := range strings.Split(s, ",") {
@@ -258,7 +264,7 @@ func CommaList(s string) []string {
 // A group holds a verb in the first slot, so the bare word "help" is
 // unambiguous here in a way it never is for a leaf command's positionals.
 // Help is intercepted before run, so `git work repo list -h` prints list's
-// usage instead of listing repos; Wanted stops scanning at the first `--`,
+// usage instead of listing repos. Wanted stops scanning at the first `--`,
 // which is what keeps `repo clone -- <repo>`'s git-clone option space opaque.
 func RunGroup(group *Command, args []string, run func(sub *Command, rest []string) error) int {
 	if len(args) == 0 {

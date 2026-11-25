@@ -1,7 +1,7 @@
 # CONTEXT
 
 Glossary of domain terms for the CLI tools in this repo. The terms all belong to
-`git-work`; if another tool grows a vocabulary of its own, consider splitting into
+`git-work`. If another tool grows a vocabulary of its own, consider splitting into
 per-tool contexts via a `CONTEXT-MAP.md`.
 
 ## git-work
@@ -20,10 +20,10 @@ per-tool contexts via a `CONTEXT-MAP.md`.
   changes them after.
 - **Checkout mode** - how a work folder holds its repos: `worktree` or `clone`. Chosen at
   `new` (`--mode` or `defaults.mode`), recorded in state, never mixed in one folder.
-- **Worktree mode** - the original layout: each work folder repo is a linked worktree
-  backed by a primary clone under the repos root.
-- **Clone mode** - each work folder repo is a self-contained full clone; no primary clone
-  is needed and the folder can be moved or mounted as a unit.
+- **Worktree mode** - the layout with primary clones: each work folder repo is a linked
+  worktree backed by a primary clone under the repos root.
+- **Clone mode** - each work folder repo is a self-contained full clone. No primary clone
+  is needed, and the folder can be moved or mounted as a unit.
 - **Checkout** - one repo's directory inside a work folder: a linked worktree or a full
   clone, depending on the mode.
 - **Temp worktree** - the transient linked worktree at
@@ -33,7 +33,13 @@ per-tool contexts via a `CONTEXT-MAP.md`.
   a subagent uses for its own branch; a convention, not state.
 - **Workspace file** - the `<folder>.code-workspace` at a work folder's root, listing the
   work folder root and each repo checkout so one VS Code window holds the whole folder.
-  Only its `folders` key belongs to git-work; operator settings in it are preserved.
+  Only its `folders` key belongs to git-work. Operator settings in it are preserved.
+- **Overlay** - operator text inlined into a work folder's instructions file. The text
+  comes from three sources, in section order: the operator overlay
+  (`<config-dir>/AGENTS.md`), the repos-root overlay (`<repos-root>/AGENTS.md`), and a
+  per-repo overlay (`<repos-root>/<repo>/AGENTS.md` or
+  `<config-dir>/repo-instructions/<repo>.md`). Each file follows `instructions_file`, with
+  the other name as the fallback.
 - **Repo registry** - the `repos.<name>.url` config entries that let clone mode create a
   repo without a local primary clone.
 - **Recorded default branch** - `repos[].default_branch` in state, captured when a
@@ -57,9 +63,10 @@ per-tool contexts via a `CONTEXT-MAP.md`.
   missing from `origin/<default>` (patch equivalence) or from `origin/<branch>`
   (ancestry). The measure `push` scopes from. Local-only integration leaves commits
   integrated but still unpublished.
-- **Unpushed commits** - commits on a branch that are not on its `@{upstream}`; a branch
-  with no upstream counts as entirely unpushed. The measure `done`'s safety check uses. A
-  branch can be unpushed but have zero un-integrated commits, and vice versa.
+- **Unpushed commits** - commits on a branch that `origin/<branch>` does not have (plain
+  ancestry). The measure `push` uses for its branch-ahead leg. Distinct from _unpublished_
+  (which also counts work already on `origin/<default>`) and from _contained_. Teardown
+  gates on _contained_, not on this.
 - **Empty branch** - a work branch with zero un-integrated commits (nothing since
   branching from the default branch). `push` skips a branch with no unpublished commits
   unless `--allow-empty`.
@@ -68,7 +75,7 @@ per-tool contexts via a `CONTEXT-MAP.md`.
 - **Teardown** - removing a repo's worktree/branches and dropping it from work folder
   state (`done` for the whole folder, `rm` for one repo).
 - **Drift** - a managed thing no longer agreeing with what git-work recorded. Layout drift
-  is a primary clone's on-disk shape departing from the managed layout; branch drift is a
+  is a primary clone's on-disk shape departing from the managed layout. Branch drift is a
   worktree's checked-out branch departing from the one state records for it.
 - **Integrating** - moving a work branch's un-integrated commits onto its repo's local
   default branch, as opposed to merging via a remote PR. By fast-forward when the default

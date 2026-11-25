@@ -45,7 +45,7 @@ func TestMergeManagedBlockNoMarkers(t *testing.T) {
 
 func TestAggregateInstructions(t *testing.T) {
 	repos := t.TempDir()
-	// repo "alpha" has an overlay; "beta" does not
+	// repo "alpha" has an overlay, "beta" does not
 	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)
 	os.WriteFile(filepath.Join(repos, "alpha", "AGENTS.md"), []byte("alpha guidance\n"), 0o644)
 	os.MkdirAll(filepath.Join(repos, "beta"), 0o755)
@@ -151,6 +151,8 @@ func TestAggregateInstructionsOverlay(t *testing.T) {
 func TestAggregateInstructionsSectionOrder(t *testing.T) {
 	repos := t.TempDir()
 	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)
+	os.WriteFile(filepath.Join(repos, "AGENTS.md"), []byte("## Repos root rules\n"), 0o644)
+	os.WriteFile(filepath.Join(repos, "alpha", "AGENTS.md"), []byte("alpha detail\n"), 0o644)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("## Helper tools\n"), 0o644)
 
@@ -160,7 +162,10 @@ func TestAggregateInstructionsSectionOrder(t *testing.T) {
 		Repos: []RepoRef{{Name: "alpha"}},
 	})
 
-	order := []string{"# PROJ-1: Fix login", "## Work folder", "## Helper tools", "## alpha (./alpha)"}
+	order := []string{
+		"# PROJ-1: Fix login", "## Work folder", "## Helper tools",
+		"## Repos root rules", "## alpha (./alpha)", "alpha detail",
+	}
 	at := -1
 	for _, s := range order {
 		i := strings.Index(got, s)
@@ -231,6 +236,71 @@ func TestAggregateInstructionsNormalisesOverlaySpacing(t *testing.T) {
 // An overlay under the other instructions name is the fallback, so switching
 // the setting does not require the overlays to be renamed. When both names
 // exist, the one matching the setting wins.
+// The repos-root overlay sits between the operator overlay and the per-repo
+// sections, follows the instructions file name with the other name as fallback,
+// and adds nothing when the file or the root is absent.
+func TestAggregateInstructionsReposRootOverlay(t *testing.T) {
+	repos := t.TempDir()
+	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)
+	overlay := filepath.Join(repos, "AGENTS.md")
+	in := InstructionsInput{
+		ReposRoot: repos,
+		TicketID:  "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo",
+		Repos: []RepoRef{{Name: "alpha"}},
+	}
+
+	t.Run("absent", func(t *testing.T) {
+		if got := agg(t, in); strings.Contains(got, "repos-root guidance") {
+			t.Errorf("nothing should be inlined when the overlay is missing:\n%s", got)
+		}
+	})
+
+	t.Run("present", func(t *testing.T) {
+		os.WriteFile(overlay, []byte("## Repos root rules\n\nrepos-root guidance"), 0o644)
+		got := agg(t, in)
+		if !strings.Contains(got, "repos-root guidance") {
+			t.Errorf("repos-root overlay not inlined:\n%s", got)
+		}
+		if strings.Contains(got, "repos-root guidance## alpha") {
+			t.Errorf("repos-root overlay ran into the repo section:\n%s", got)
+		}
+	})
+
+	t.Run("blank file is skipped", func(t *testing.T) {
+		os.WriteFile(overlay, []byte("   \n\n"), 0o644)
+		if got := agg(t, in); strings.Contains(got, "\n\n\n\n") {
+			t.Errorf("a blank repo-root overlay should add nothing:\n%s", got)
+		}
+	})
+
+	t.Run("other name is the fallback", func(t *testing.T) {
+		os.Remove(overlay)
+		os.WriteFile(filepath.Join(repos, "CLAUDE.md"), []byte("repos claude\n"), 0o644)
+		if got := agg(t, in); !strings.Contains(got, "repos claude") {
+			t.Errorf("CLAUDE.md should be the fallback for AGENTS.md:\n%s", got)
+		}
+
+		os.WriteFile(overlay, []byte("repos agents\n"), 0o644)
+		if got := agg(t, in); !strings.Contains(got, "repos agents") || strings.Contains(got, "repos claude") {
+			t.Errorf("the overlay named like the setting must win:\n%s", got)
+		}
+
+		in.File = config.InstructionsClaude
+		if got := agg(t, in); !strings.Contains(got, "repos claude") {
+			t.Errorf("with CLAUDE.md configured the CLAUDE.md overlay must win:\n%s", got)
+		}
+	})
+
+	t.Run("empty repos root reads nothing", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		os.WriteFile("AGENTS.md", []byte("cwd guidance\n"), 0o644)
+		got := agg(t, InstructionsInput{TicketID: "PROJ-1", Title: "Fix login", Branch: "PROJ-1-foo"})
+		if strings.Contains(got, "cwd guidance") {
+			t.Errorf("an empty repos root must not read its file from the cwd:\n%s", got)
+		}
+	})
+}
+
 func TestAggregateInstructionsOverlayFallback(t *testing.T) {
 	repos := t.TempDir()
 	os.MkdirAll(filepath.Join(repos, "alpha"), 0o755)

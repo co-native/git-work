@@ -40,7 +40,7 @@ var Cmd = &cli.Command{
 		"asked, then removes the folder. <dir> is a bare name resolved under the work\n" +
 		"root, or a path. Checks and teardown run per repo, failures are collected at\n" +
 		"the end, and a re-run resumes exactly the repos still outstanding. --force\n" +
-		"overrides safety-check problems (uncommitted, unpushed, unmerged) but never\n" +
+		"overrides safety-check problems (uncommitted, unmerged) but never\n" +
 		"deletes files git-work did not create - that is --remove-all, which --force\n" +
 		"does NOT imply; without it such a folder is kept and the run still succeeds.\n" +
 		"Run it from outside the folder: done removes the folder.",
@@ -53,7 +53,7 @@ var Cmd = &cli.Command{
 		{Long: "delete-remote", Desc: "delete each repo's remote branch (prompted for interactively)"},
 		{Long: "force", Desc: "override safety-check problems; does not imply --remove-all"},
 		{Long: "remove-all", Desc: "remove the folder even when it holds files git-work did not create"},
-		{Long: "no-fetch", Desc: "skip fetching before the merged check"},
+		{Long: "no-fetch", Desc: "skip fetching before the containment check"},
 		{Long: "non-interactive", Desc: "skip the prompts and take the flags as given"},
 	},
 }
@@ -66,7 +66,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.BoolVar(&o.deleteRemote, "delete-remote", false, "delete remote branches")
 	fs.BoolVar(&o.force, "force", false, "override safety-check problems")
 	fs.BoolVar(&o.removeAll, "remove-all", false, "delete the work folder even when it contains files git-work did not create (--force does NOT imply this)")
-	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the merged check")
+	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the containment check")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "skip the TUI; use flags")
 	return fs
 }
@@ -88,8 +88,8 @@ func parseFlags(args []string) (*options, error) {
 	return o, nil
 }
 
-// Run executes `git work done`; it prints any error to stderr and returns
-// the process exit code.
+// Run executes `git work done`. It prints any error to stderr and returns the
+// process exit code.
 func Run(args []string) int {
 	if cli.Wanted(args) {
 		return cli.Help(Cmd)
@@ -129,7 +129,7 @@ func run(args []string) error {
 		return fmt.Errorf("load state from %s: %w", workDir, err)
 	}
 
-	// Compute the extra (non-git-work) files at the work-folder root UP FRONT,
+	// Compute the extra (non-git-work) files at the work-folder root first,
 	// while the repo worktrees still exist so the walk can skip them cheaply.
 	// This drives the leftover decision below and the end-of-run folder removal.
 	extra, err := extraFiles(workDir, st)
@@ -147,9 +147,10 @@ func run(args []string) error {
 		}
 	}
 
-	// Decide what to do with the extra files. Default: remove the whole folder
-	// (nothing extra, or an explicit --remove-all/Delete). Keep leaves the
-	// folder + honest state; Cancel aborts before any checks or teardown.
+	// Decide what to do with the extra files. The default removes the whole
+	// folder (nothing extra, or an explicit --remove-all/Delete). Keep leaves
+	// the folder and the honest state. Cancel aborts before any checks or
+	// teardown.
 	decision := decideRemove
 	if len(extra) > 0 && !o.removeAll {
 		if o.nonInteractive {
@@ -199,8 +200,8 @@ func run(args []string) error {
 		}
 	}
 
-	// Keep: leave the folder with the extra files and the honest
-	// (torn-down repos removed) state; the run still succeeds.
+	// Keep: leave the folder with the extra files and the honest state
+	// (torn-down repos removed). The run still succeeds.
 	if decision == decideKeep {
 		fmt.Printf("Tore down %d repo(s); kept %s (contains files git-work did not create):\n  %s\n",
 			repoCount, workDir, strings.Join(extra, "\n  "))
@@ -231,7 +232,7 @@ func tdOptions(o *options, cfg *config.Config, l layout.Layout, st *state.State,
 }
 
 // leftoverProblems reports worktrees left under .worktrees. done does not
-// inspect their branches or guess whether the work is merged; --force is the
+// inspect their branches or guess whether the work is merged. --force is the
 // explicit discard path.
 func leftoverProblems(workDir string) []string {
 	left, err := teardownpkg.Leftovers(workDir)
@@ -246,7 +247,7 @@ func leftoverProblems(workDir string) []string {
 
 // runChecks aggregates the shared per-repo safety checks across every repo in
 // the work folder. An error while running a check is a warning plus a counted
-// problem (conservative), never a mid-loop abort; --force overrides problems.
+// problem (conservative), never a mid-loop abort. --force overrides problems.
 func runChecks(o *options, cfg *config.Config, l layout.Layout, st *state.State, workDir string) []string {
 	to := tdOptions(o, cfg, l, st, workDir)
 	var problems []string
@@ -304,7 +305,7 @@ func generatedNames(workDir string) map[string]bool {
 // root that done did not generate. It skips the repo worktree directories
 // wholesale (their contents belong to git-work, not the user) using the names
 // in st.Repos, and excludes generatedNames. Empty directories (recursively)
-// are not extra files; anything else - user notes, manually added checkouts -
+// are not extra files. Anything else - user notes, manually added checkouts -
 // is what the leftover decision is about. Computed up front, while worktrees
 // still exist, so it can be shown alongside the delete prompts.
 func extraFiles(workDir string, st *state.State) ([]string, error) {
@@ -325,7 +326,7 @@ func extraFiles(workDir string, st *state.State) ([]string, error) {
 		if rel == "." {
 			return nil
 		}
-		// A repo's worktree dir sits at the root; skip it whole.
+		// A repo's worktree dir sits at the root. Skip it whole.
 		if d.IsDir() && !strings.ContainsRune(rel, filepath.Separator) && worktrees[rel] {
 			return fs.SkipDir
 		}

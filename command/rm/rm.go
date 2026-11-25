@@ -48,8 +48,8 @@ var Cmd = &cli.Command{
 	Flags: []cli.Flag{
 		{Long: "delete-local", Desc: "delete the repo's local branch (prompted for interactively)"},
 		{Long: "delete-remote", Desc: "delete the repo's remote branch (prompted for interactively)"},
-		{Long: "force", Desc: "override safety-check problems (uncommitted, unpushed, unmerged)"},
-		{Long: "no-fetch", Desc: "skip fetching before the merged check"},
+		{Long: "force", Desc: "override safety-check problems (uncommitted, unmerged)"},
+		{Long: "no-fetch", Desc: "skip fetching before the containment check"},
 		{Long: "non-interactive", Desc: "skip the prompts and take the flags as given"},
 	},
 }
@@ -61,7 +61,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.BoolVar(&o.deleteLocal, "delete-local", false, "delete the local branch")
 	fs.BoolVar(&o.deleteRemote, "delete-remote", false, "delete the remote branch")
 	fs.BoolVar(&o.force, "force", false, "override safety-check problems")
-	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the merged check")
+	fs.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching before the containment check")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "skip the TUI; use flags")
 	return fs
 }
@@ -86,7 +86,7 @@ func parseFlags(args []string) (*options, error) {
 	return o, nil
 }
 
-// Run executes `git work rm`; it prints any error to stderr and returns the
+// Run executes `git work rm`. It prints any error to stderr and returns the
 // process exit code.
 func Run(args []string) int {
 	if cli.Wanted(args) {
@@ -161,7 +161,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// TeardownRepo drops r from st and saves only on full success; on
+	// TeardownRepo drops r from st and saves only on full success. On
 	// failure st (and the on-disk state) is untouched, so stop here without
 	// re-aggregating the managed blocks.
 	failures := teardown.TeardownRepo(to, l, st, r, workDir)
