@@ -370,31 +370,6 @@ func TestResolveWorkDir(t *testing.T) {
 	}
 }
 
-func TestInferTicket(t *testing.T) {
-	tests := []struct {
-		folder, ticket, slug string
-	}{
-		{"PROJ-3-git-work-updates", "PROJ-3", "git-work-updates"},
-		{"PROJ-123", "PROJ-123", ""},
-		{"proj-7-fix-thing", "proj-7", "fix-thing"},
-		{"proj2-7-fix", "proj2-7", "fix"},
-		// Multi-segment ticket prefixes (the repo's own dev-tools-N form).
-		{"dev-tools-12-fix-thing", "dev-tools-12", "fix-thing"},
-		{"DEV-TOOLS-1", "DEV-TOOLS-1", ""},
-		// No ticket-shaped prefix: not a ticket at all (ticketless).
-		{"my-cool-feature", "", ""},
-		{"123-4-x", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.folder, func(t *testing.T) {
-			ticket, slug := inferTicket(tt.folder)
-			if ticket != tt.ticket || slug != tt.slug {
-				t.Errorf("inferTicket(%q) = %q, %q; want %q, %q", tt.folder, ticket, slug, tt.ticket, tt.slug)
-			}
-		})
-	}
-}
-
 func TestReadoptRecordsAMovedBranch(t *testing.T) {
 	// State is written once at new/add/adopt time and nothing else re-syncs
 	// it, so re-adopting is the supported way to say "this is the branch now"

@@ -15,6 +15,7 @@ import (
 	"github.com/co-native/git-work/command/push"
 	"github.com/co-native/git-work/command/rebase"
 	"github.com/co-native/git-work/command/refresh"
+	"github.com/co-native/git-work/command/rename"
 	repocmd "github.com/co-native/git-work/command/repo"
 	"github.com/co-native/git-work/command/rm"
 	"github.com/co-native/git-work/command/version"
@@ -38,6 +39,7 @@ var commands = []entry{
 	{newcmd.Cmd, newcmd.Run},
 	{add.Cmd, add.Run},
 	{adopt.Cmd, adopt.Run},
+	{rename.Cmd, rename.Run},
 	{refresh.Cmd, refresh.Run},
 	{changes.Cmd, changes.Run},
 	{rebase.Cmd, rebase.Run},

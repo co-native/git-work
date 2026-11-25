@@ -1,6 +1,6 @@
 # CONTEXT
 
-Glossary of domain terms for the CLI tools in this repo. Currently the terms all belong to
+Glossary of domain terms for the CLI tools in this repo. The terms all belong to
 `git-work`; if another tool grows a vocabulary of its own, consider splitting into
 per-tool contexts via a `CONTEXT-MAP.md`.
 
@@ -10,6 +10,14 @@ per-tool contexts via a `CONTEXT-MAP.md`.
 - **Work folder** - a directory under `paths.work` (`~/dev/work/<ticket>-<slug>/`) holding
   one checkout per participating repo plus a `.git-work.yaml` state file. The checkout is
   a linked worktree in worktree mode and a full clone in clone mode.
+- **Slug** - the descriptive part of a work folder's name and of its work branch:
+  lowercased, with each run of non-alphanumerics collapsed to one dash. The folder is
+  `<ticket>-<slug>`, or the slug alone for a ticketless folder; the default work branch
+  follows the same shape.
+- **Rename** - changing a work folder's folder name, slug, ticket, or work branches as one
+  operation (`git work rename`), so the directory, its state and its branches stay in
+  step. `new` and `adopt` set the names initially; `rename` is the only command that
+  changes them after.
 - **Checkout mode** - how a work folder holds its repos: `worktree` or `clone`. Chosen at
   `new` (`--mode` or `defaults.mode`), recorded in state, never mixed in one folder.
 - **Worktree mode** - the original layout: each work folder repo is a linked worktree

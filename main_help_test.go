@@ -11,8 +11,8 @@ import (
 
 // The per-package conformance tests check that each command describes itself
 // correctly. These check the other half: that every described command is
-// actually reachable, that the index and the commands agree, and that the three
-// help routes resolve.
+// reachable, that the index and the commands agree, and that the three help
+// routes resolve.
 
 // paths lists every invocation a user can type, as an end-to-end guard that the
 // registry has not silently lost one. It is written out by hand rather than
@@ -21,14 +21,14 @@ import (
 var paths = [][]string{
 	{"repos"}, {"repo"},
 	{"repos", "clone"}, {"repos", "adopt"}, {"repos", "list"}, {"repos", "pull"},
-	{"clone"}, {"new"}, {"add"}, {"adopt"}, {"refresh"}, {"changes"},
+	{"clone"}, {"new"}, {"add"}, {"adopt"}, {"rename"}, {"refresh"}, {"changes"},
 	{"rebase"}, {"push"}, {"integrate"}, {"git"}, {"done"}, {"rm"},
 	{"config"},
 	{"config", "list"}, {"config", "get"}, {"config", "set"},
 	{"config", "unset"}, {"config", "edit"}, {"config", "path"}, {"config", "init"},
 }
 
-// TestEveryPathAnswersHelp is the contract in one assertion: for all 25 paths
+// TestEveryPathAnswersHelp is the contract in one assertion: for all 27 paths
 // and both spellings, usage goes to stdout, stderr stays empty, and the exit
 // code is 0. It runs the real binary because the exit code and the stream are
 // the observable behaviour, and both were wrong in different ways before.

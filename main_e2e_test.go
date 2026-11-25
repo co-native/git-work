@@ -1138,3 +1138,332 @@ func TestCloneModeRmForceCleansFolderLeftovers(t *testing.T) {
 		t.Error("alpha clone survived rm")
 	}
 }
+
+// renameGW returns a helper that runs git-work and fails the test on error.
+func renameGW(t *testing.T, bin string, env []string) func(dir string, args ...string) string {
+	t.Helper()
+	return func(dir string, args ...string) string {
+		t.Helper()
+		out, err := gwRun(t, bin, dir, env, args...)
+		if err != nil {
+			t.Fatalf("git-work %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+}
+
+// localBranchExists reports whether dir has a local branch with that name.
+func localBranchExists(t *testing.T, dir, branch string) bool {
+	t.Helper()
+	return strings.TrimSpace(shOut(t, dir, "git", "branch", "--list", branch)) != ""
+}
+
+// remoteBranchExists reports whether origin has a branch with that name.
+func remoteBranchExists(t *testing.T, origin, branch string) bool {
+	t.Helper()
+	return strings.TrimSpace(shOut(t, "", "git", "ls-remote", "--heads", origin, "refs/heads/"+branch)) != ""
+}
+
+// Folder, state, work branches and every path that points at the folder move
+// together, and a repo on its own branch is left there. A dry run changes
+// nothing, and a second identical run is a no-op.
+func TestRenameWorkFolder(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	ob := makeOriginIn(t, home, "beta")
+	gw := renameGW(t, bin, env)
+
+	gw(home, "clone", oa, "alpha")
+	gw(home, "clone", ob, "beta")
+	gw(home, "new", "PROJ-1", "--repos", "alpha", "--non-interactive")
+	oldDir := filepath.Join(workRoot, "PROJ-1-proj-1")
+	gw(oldDir, "add", "--repos", "beta", "--branch", "PROJ-9-beta", "--non-interactive")
+
+	// The dry run reports the plan and touches nothing.
+	out := gw(home, "rename", "PROJ-1-proj-1", "PROJ-1-fix-login", "--dry-run")
+	if !strings.Contains(out, "Dry run") || !strings.Contains(out, "PROJ-9-beta") {
+		t.Errorf("dry run output does not describe the plan:\n%s", out)
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		t.Fatalf("dry run moved the folder: %v", err)
+	}
+	if localBranchExists(t, filepath.Join(reposRoot, "alpha", "main"), "PROJ-1-fix-login") {
+		t.Error("dry run renamed a branch")
+	}
+
+	newDir := filepath.Join(workRoot, "PROJ-1-fix-login")
+	out = gw(home, "rename", "PROJ-1-proj-1", "PROJ-1-fix-login")
+	if !strings.Contains(out, "beta: left on PROJ-9-beta") {
+		t.Errorf("rename output does not report the repo left on its own branch:\n%s", out)
+	}
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("old folder %s still exists", oldDir)
+	}
+	if _, err := os.Stat(newDir); err != nil {
+		t.Fatalf("new folder missing: %v", err)
+	}
+
+	st, err := state.Load(newDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Slug != "fix-login" || st.Branch != "PROJ-1-fix-login" {
+		t.Errorf("state slug/branch = %q/%q", st.Slug, st.Branch)
+	}
+	if st.TicketID != "PROJ-1" || st.Title != "PROJ-1" {
+		t.Errorf("state ticket/title = %q/%q", st.TicketID, st.Title)
+	}
+	if alpha, _ := st.Repo("alpha"); alpha.Branch != "PROJ-1-fix-login" {
+		t.Errorf("alpha branch = %q", alpha.Branch)
+	}
+	if beta, _ := st.Repo("beta"); beta.Branch != "PROJ-9-beta" {
+		t.Errorf("beta branch = %q, want PROJ-9-beta", beta.Branch)
+	}
+
+	// The primary's registration follows the moved worktree, and the worktree
+	// itself sits on the new branch.
+	list := shOut(t, filepath.Join(reposRoot, "alpha", "main"), "git", "worktree", "list")
+	if !strings.Contains(list, filepath.Join(newDir, "alpha")) {
+		t.Errorf("alpha primary does not point at the moved worktree:\n%s", list)
+	}
+	if got := strings.TrimSpace(shOut(t, filepath.Join(newDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-1-fix-login" {
+		t.Errorf("alpha worktree branch = %q, want PROJ-1-fix-login", got)
+	}
+
+	// The workspace file is named after the folder, and the generated text
+	// carries the new branch.
+	if _, err := os.Stat(filepath.Join(newDir, "PROJ-1-fix-login.code-workspace")); err != nil {
+		t.Errorf("workspace file not renamed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(newDir, "PROJ-1-proj-1.code-workspace")); !os.IsNotExist(err) {
+		t.Error("old workspace file left behind")
+	}
+	readme, _ := os.ReadFile(filepath.Join(newDir, "README.md"))
+	if !strings.Contains(string(readme), "Branch: PROJ-1-fix-login") {
+		t.Errorf("README.md was not re-rendered:\n%s", readme)
+	}
+	agents, _ := os.ReadFile(filepath.Join(newDir, "AGENTS.md"))
+	if !strings.Contains(string(agents), "Branch: PROJ-1-fix-login") {
+		t.Errorf("AGENTS.md was not re-rendered:\n%s", agents)
+	}
+
+	// A second identical run reports nothing to do.
+	if out := gw(home, "rename", "PROJ-1-fix-login", "PROJ-1-fix-login"); !strings.Contains(out, "Nothing to rename") {
+		t.Errorf("re-run did not report a no-op:\n%s", out)
+	}
+
+	// push acts on the renamed branch and publishes it under the new name.
+	clone := filepath.Join(newDir, "alpha")
+	sh(t, clone, "git", "config", "user.email", "t@t.t")
+	sh(t, clone, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(clone, "work.txt"), []byte("x\n"), 0o644)
+	sh(t, clone, "git", "add", "work.txt")
+	sh(t, clone, "git", "commit", "-qm", "work")
+	gw(newDir, "push", "alpha")
+	if !remoteBranchExists(t, oa, "PROJ-1-fix-login") {
+		t.Error("push after rename did not publish the new branch name")
+	}
+	if remoteBranchExists(t, oa, "PROJ-1-proj-1") {
+		t.Error("push after rename published the old branch name")
+	}
+}
+
+// Clone mode has no primary, so the move needs no worktree repair; the clones
+// travel with the folder. --keep-branch renames the folder and slug and
+// leaves the branch where it is.
+func TestRenameCloneModeAndKeepBranch(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
+	gw := renameGW(t, bin, env)
+
+	gw(home, "new", "PROJ-4", "--repos", "alpha", "--non-interactive")
+	oldDir := filepath.Join(workRoot, "PROJ-4-proj-4")
+	newDir := filepath.Join(workRoot, "PROJ-4-clone")
+	gw(home, "rename", "PROJ-4-proj-4", "PROJ-4-clone")
+
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("old clone folder still exists")
+	}
+	if fi, err := os.Stat(filepath.Join(newDir, "alpha", ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("clone did not move with the folder: %v", err)
+	}
+	if got := strings.TrimSpace(shOut(t, filepath.Join(newDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-4-clone" {
+		t.Errorf("clone branch = %q, want PROJ-4-clone", got)
+	}
+
+	// The folder, slug and VS Code file move; the branch stays.
+	gw(home, "rename", "PROJ-4-clone", "PROJ-4-kept", "--keep-branch")
+	keptDir := filepath.Join(workRoot, "PROJ-4-kept")
+	st, err := state.Load(keptDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Slug != "kept" {
+		t.Errorf("slug = %q, want kept", st.Slug)
+	}
+	if st.Branch != "PROJ-4-clone" {
+		t.Errorf("branch = %q, want the unchanged PROJ-4-clone", st.Branch)
+	}
+	if got := strings.TrimSpace(shOut(t, filepath.Join(keptDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-4-clone" {
+		t.Errorf("clone branch = %q, want PROJ-4-clone", got)
+	}
+	if _, err := os.Stat(filepath.Join(keptDir, "PROJ-4-kept.code-workspace")); err != nil {
+		t.Errorf("workspace file did not follow the folder: %v", err)
+	}
+}
+
+// A ticketless folder gains a ticket: the folder becomes <ticket>-<slug>, the
+// branch follows, and TICKET.md appears where there was none.
+func TestRenameTicketlessAddsTicket(t *testing.T) {
+	bin, home, _, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	gw := renameGW(t, bin, env)
+
+	gw(home, "clone", oa, "alpha")
+	gw(home, "new", "-n", "Spike Harness", "--repos", "alpha", "--non-interactive")
+	if _, err := os.Stat(filepath.Join(workRoot, "spike-harness", "TICKET.md")); !os.IsNotExist(err) {
+		t.Fatal("a ticketless folder must not have TICKET.md")
+	}
+
+	gw(home, "rename", "spike-harness", "--ticket", "PROJ-8")
+	workDir := filepath.Join(workRoot, "PROJ-8-spike-harness")
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.NoTicket || st.TicketID != "PROJ-8" {
+		t.Errorf("state ticket = %q, no_ticket = %v", st.TicketID, st.NoTicket)
+	}
+	if st.Slug != "spike-harness" || st.Branch != "PROJ-8-spike-harness" {
+		t.Errorf("slug/branch = %q/%q", st.Slug, st.Branch)
+	}
+	if st.Title != "PROJ-8" {
+		t.Errorf("title = %q, want the display id with no provider configured", st.Title)
+	}
+	ticket, err := os.ReadFile(filepath.Join(workDir, "TICKET.md"))
+	if err != nil {
+		t.Fatalf("TICKET.md was not written: %v", err)
+	}
+	if !strings.Contains(string(ticket), "# PROJ-8: PROJ-8") {
+		t.Errorf("TICKET.md = %s", ticket)
+	}
+	if got := strings.TrimSpace(shOut(t, filepath.Join(workDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "HEAD")); got != "PROJ-8-spike-harness" {
+		t.Errorf("branch = %q, want PROJ-8-spike-harness", got)
+	}
+
+	// A later rename keeps the ticket and moves both names along.
+	gw(home, "rename", "PROJ-8-spike-harness", "PROJ-8-spike-otel")
+	st, err = state.Load(filepath.Join(workRoot, "PROJ-8-spike-otel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TicketID != "PROJ-8" || st.Slug != "spike-otel" || st.Branch != "PROJ-8-spike-otel" {
+		t.Errorf("state after the second rename = %+v", st)
+	}
+}
+
+// --remote publishes the new branch name and deletes the old one, and the
+// upstream follows.
+func TestRenameRemote(t *testing.T) {
+	bin, home, _, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	gw := renameGW(t, bin, env)
+
+	gw(home, "clone", oa, "alpha")
+	gw(home, "new", "PROJ-5", "--repos", "alpha", "--branch", "PROJ-5-old", "--non-interactive")
+	oldDir := filepath.Join(workRoot, "PROJ-5-proj-5")
+	clone := filepath.Join(oldDir, "alpha")
+	sh(t, clone, "git", "config", "user.email", "t@t.t")
+	sh(t, clone, "git", "config", "user.name", "t")
+	os.WriteFile(filepath.Join(clone, "work.txt"), []byte("x\n"), 0o644)
+	sh(t, clone, "git", "add", "work.txt")
+	sh(t, clone, "git", "commit", "-qm", "work")
+	gw(oldDir, "push", "alpha")
+	if !remoteBranchExists(t, oa, "PROJ-5-old") {
+		t.Fatal("setup: the old branch was not pushed")
+	}
+
+	gw(home, "rename", "PROJ-5-proj-5", "PROJ-5-new", "--branch", "PROJ-5-new", "--remote")
+	newDir := filepath.Join(workRoot, "PROJ-5-new")
+	if remoteBranchExists(t, oa, "PROJ-5-old") {
+		t.Error("--remote left the old branch on origin")
+	}
+	if !remoteBranchExists(t, oa, "PROJ-5-new") {
+		t.Error("--remote did not push the new branch")
+	}
+	if got := strings.TrimSpace(shOut(t, filepath.Join(newDir, "alpha"), "git", "rev-parse", "--abbrev-ref", "@{upstream}")); got != "origin/PROJ-5-new" {
+		t.Errorf("upstream = %q, want origin/PROJ-5-new", got)
+	}
+}
+
+// Every gate refuses the whole run before anything moves.
+func TestRenameRefusals(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	oa := makeOriginIn(t, home, "alpha")
+	gw := renameGW(t, bin, env)
+
+	gw(home, "clone", oa, "alpha")
+	gw(home, "new", "PROJ-1", "--repos", "alpha", "--non-interactive")
+	workDir := filepath.Join(workRoot, "PROJ-1-proj-1")
+
+	refuse := func(want string, args ...string) {
+		t.Helper()
+		out, err := gwRun(t, bin, home, env, args...)
+		if err == nil {
+			t.Fatalf("git-work %v succeeded; want a refusal", args)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("git-work %v output does not contain %q:\n%s", args, want, out)
+		}
+		if _, statErr := os.Stat(workDir); statErr != nil {
+			t.Fatalf("a refusal moved the work folder: %v", statErr)
+		}
+	}
+
+	// The target folder is taken.
+	os.MkdirAll(filepath.Join(workRoot, "taken"), 0o755)
+	refuse("already exists", "rename", "PROJ-1-proj-1", "taken")
+	os.Remove(filepath.Join(workRoot, "taken"))
+
+	// The target branch is taken.
+	sh(t, filepath.Join(reposRoot, "alpha", "main"), "git", "branch", "PROJ-1-taken")
+	refuse("already exists", "rename", "PROJ-1-proj-1", "PROJ-1-taken")
+
+	// The target is the default branch.
+	refuse("default branch", "rename", "PROJ-1-proj-1", "--branch", "main")
+
+	// A hand-switched worktree is drift, not a rename target.
+	sh(t, filepath.Join(workDir, "alpha"), "git", "switch", "-q", "-c", "elsewhere")
+	refuse("state records branch", "rename", "PROJ-1-proj-1", "PROJ-1-next")
+	sh(t, filepath.Join(workDir, "alpha"), "git", "switch", "-q", "PROJ-1-proj-1")
+
+	// .worktrees holds a worktree that must not move under its owner.
+	os.MkdirAll(filepath.Join(workDir, ".worktrees", "agent-x"), 0o755)
+	refuse(".worktrees contains", "rename", "PROJ-1-proj-1", "PROJ-1-next")
+	os.RemoveAll(filepath.Join(workDir, ".worktrees"))
+
+	// A name claiming another ticket without --ticket.
+	refuse("names ticket", "rename", "PROJ-1-proj-1", "PROJ-2-thing")
+
+	// A folder that moves refuses to run from inside itself.
+	cmd := exec.Command(bin, "rename", workDir, "PROJ-1-next")
+	cmd.Dir = workDir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "refusing to rename") {
+		t.Errorf("rename from inside the folder = %v, want a refusal:\n%s", err, out)
+	}
+
+	// Nothing above changed anything.
+	st, err := state.Load(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Slug != "proj-1" || st.Branch != "PROJ-1-proj-1" {
+		t.Errorf("state changed after refusals: %+v", st)
+	}
+	if localBranchExists(t, filepath.Join(reposRoot, "alpha", "main"), "PROJ-1-next") {
+		t.Error("a refusal renamed a branch")
+	}
+}

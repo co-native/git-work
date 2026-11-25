@@ -110,15 +110,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// Resolve work dir: a bare name (no path separator) resolves under
-	// WorkRoot; anything containing a separator is treated as a path.
-	var workDir string
-	if containsPathSeparator(o.dir) || filepath.IsAbs(o.dir) {
-		workDir = o.dir
-	} else {
-		workDir = l.WorkDir(o.dir)
-	}
-	workDir, err = filepath.Abs(workDir)
+	workDir, err := workfolder.ResolveDir(l, o.dir)
 	if err != nil {
 		return err
 	}
@@ -129,7 +121,7 @@ func run(args []string) error {
 	if err := workfolder.RefuseInsideWorktrees(cwd, workDir); err != nil {
 		return err
 	}
-	if insideDir(workDir, cwd) {
+	if workfolder.InsideDir(workDir, cwd) {
 		return cli.Usagef("refusing to tear down %s from inside it: done removes the folder; run it from outside, e.g. `cd %s && git work done %s`", workDir, filepath.Dir(workDir), workDir)
 	}
 	st, err := state.Load(workDir)
@@ -207,7 +199,7 @@ func run(args []string) error {
 		}
 	}
 
-	// Keep: leave the folder with the extra files and the now-honest
+	// Keep: leave the folder with the extra files and the honest
 	// (torn-down repos removed) state; the run still succeeds.
 	if decision == decideKeep {
 		fmt.Printf("Tore down %d repo(s); kept %s (contains files git-work did not create):\n  %s\n",
@@ -219,50 +211,6 @@ func run(args []string) error {
 	}
 	fmt.Printf("Closed out %s (%d repo(s))\n", workDir, repoCount)
 	return nil
-}
-
-// insideDir reports whether child is parent or a descendant of it. A failed
-// Rel, an absolute result (a different volume on Windows), ".." and "../x"
-// all mean outside; everything else is inside, including "." and names that
-// merely begin with a dot.
-func insideDir(parent, child string) bool {
-	// Walk up from child and compare by file identity. That handles symlinks
-	// (macOS /var vs /private/var) and case-insensitive paths, neither of which
-	// a string-prefix or filepath.Rel check gets right.
-	parentInfo, err := os.Stat(parent)
-	if err != nil || !parentInfo.IsDir() {
-		return false
-	}
-	for {
-		info, err := os.Stat(child)
-		if err != nil {
-			return false
-		}
-		if os.SameFile(parentInfo, info) {
-			return true
-		}
-		next := filepath.Dir(child)
-		if next == child {
-			return false
-		}
-		child = next
-	}
-}
-
-// containsPathSeparator reports whether s holds a path separator for this OS.
-//
-// Not `strings.ContainsRune(s, filepath.Separator)`: on Windows that only
-// matches `\`, so `git work done proj/PROJ-1` - the spelling a Windows operator
-// typing a path is most likely to use - would be mistaken for a bare folder
-// name and resolved under the work root. os.IsPathSeparator accepts both there
-// while still treating a backslash as an ordinary filename character on Unix.
-func containsPathSeparator(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if os.IsPathSeparator(s[i]) {
-			return true
-		}
-	}
-	return false
 }
 
 // tdOptions maps done's flags onto the shared teardown package's Options.

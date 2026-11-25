@@ -14,7 +14,8 @@ the invariants; when the two disagree, `DESIGN.md` wins.
   also reachable as `repos`; top-level `clone` is an alias for `repo clone`.
   `command/repo` imports `internal/repo` as `gitrepo`, and `main.go` imports it as
   `repocmd` - the same two-sided aliasing `command/config` uses against `internal/config`.
-- `internal/` - config, state, fileio (their shared file conventions), layout, repo (git
+- `internal/` - config, state, fileio (their shared file conventions), naming (folder,
+  slug and branch derivation shared by `new`/`adopt`/`rename`), layout, repo (git
   plumbing), provider, template, tui, teardown (shared `done`/`rm` logic), workfolder (the
   in-work-folder command preamble and scope), cli (the help and exit-code contract).
 
@@ -92,6 +93,9 @@ Things that are expensive to get wrong. Each is enforced in code and reasoned ab
 - **Multi-repo commands collect failures rather than aborting.** Per-repo problems are
   gathered, the rest continue, and the run exits nonzero. `integrate` is the exception:
   its pre-flight is atomic across the whole scope, so a violation means zero cherry-picks.
+  `rename` has the same atomic pre-flight, and runs branches and state before the folder
+  move, so a failure leaves a folder that `FindUp` still finds and a re-run finishes the
+  job.
 
 - **`--force` is for judgment calls, not for correctness.** It overrides "this branch is
   not merged, delete it anyway". It does not override guards against things that are never

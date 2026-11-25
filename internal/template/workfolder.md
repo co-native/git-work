@@ -11,7 +11,7 @@ participating repo plus a `.git-work.yaml` state file. It is not itself a git re
 - Never hand-edit between the `git-work:begin` and `git-work:end` markers in this file or
   in `README.md`. `git work refresh` regenerates everything between them and will discard
   edits made there. Content outside the markers is preserved.
-- Create, extend and tear down work folders with `git work` (`new`, `add`, `adopt`, `rm`,
-  `done`), never with `mkdir`, `mv` or `rm -rf` - those leave `.git-work.yaml` and the
-  real worktrees disagreeing. `git work -h` lists the commands, and every command and
-  subcommand answers `-h`/`--help`.
+- Create, extend, rename and tear down work folders with `git work` (`new`, `add`,
+  `adopt`, `rename`, `rm`, `done`), never with `mkdir`, `mv` or `rm -rf` - those leave
+  `.git-work.yaml` and the real worktrees disagreeing. `git work -h` lists the commands,
+  and every command and subcommand answers `-h`/`--help`.

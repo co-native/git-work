@@ -81,6 +81,7 @@ git work repo adopt ~/dev/some-existing-clone     # or adopt one you already hav
 # 2. Start a unit of work. Ticketless if you have no ticket:
 git work new PROJ-123 --repos api,web
 git work new --no-ticket spike-harness --repos api
+git work rename spike-harness --ticket PROJ-123   # attach a ticket later; run it from outside
 
 # 3. Work in it. From inside the folder:
 git work git -a -- status          # run any git command in every repo
@@ -99,9 +100,9 @@ git work done PROJ-123-add-auth    # safety-check, then tear down
 ```
 
 `git work done` will not delete anything it is not sure about: it checks each repo for
-uncommitted changes, unpushed commits, and whether the branch really made it into the
-default branch (recognising squash merges), and it refuses to touch files it did not
-create. Every command answers `-h`.
+uncommitted changes, unpushed commits, and whether the branch made it into the default
+branch (recognising squash merges), and it refuses to touch files it did not create. Every
+command answers `-h`.
 
 ## Configuration
 

@@ -4,12 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/co-native/git-work/internal/cli"
 	"github.com/co-native/git-work/internal/config"
 	"github.com/co-native/git-work/internal/layout"
+	"github.com/co-native/git-work/internal/naming"
 	"github.com/co-native/git-work/internal/provider"
 	"github.com/co-native/git-work/internal/repo"
 	"github.com/co-native/git-work/internal/state"
@@ -83,14 +83,6 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.BoolVar(&o.noTicket, "n", false, "shorthand for --no-ticket")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of prompting")
 	return fs
-}
-
-var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slugify(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = nonAlnum.ReplaceAllString(s, "-")
-	return strings.Trim(s, "-")
 }
 
 // parseFlags parses `git work new` arguments.
@@ -344,7 +336,7 @@ func resolveTicket(o *options, cfg *config.Config) (ticket, error) {
 	if o.noTicket {
 		t.title = o.ticketID
 		if t.slug == "" {
-			t.slug = slugify(o.ticketID)
+			t.slug = naming.Slug(o.ticketID)
 		}
 		if t.slug == "" {
 			// Determined entirely by the argument typed, so it is the
@@ -353,32 +345,22 @@ func resolveTicket(o *options, cfg *config.Config) (ticket, error) {
 		}
 		return t, nil
 	}
-	if err := provider.Validate(cfg.Providers); err != nil {
-		return t, err
-	}
-	match, err := provider.Resolve(cfg.Providers, o.ticketID)
+	in, matched, err := provider.ResolveIdentity(cfg.Providers, o.ticketID, func(msg string) {
+		fmt.Fprintf(os.Stderr, "git-work: %v (continuing without ticket details)\n", msg)
+	})
 	if err != nil {
 		return t, err
 	}
-	if match.Provider == nil && len(cfg.Providers) > 0 {
+	if !matched && len(cfg.Providers) > 0 {
 		return t, fmt.Errorf("ticket id %q matches no configured provider (use --no-ticket for a ticketless work folder)", o.ticketID)
 	}
-	t.displayID = provider.DisplayID(o.ticketID)
-	t.title = t.displayID
-	if match.Provider != nil {
-		t.folderCase, t.branchCase = match.Provider.FolderCase, match.Provider.BranchCase
-		if d, err := provider.Fetch(match, o.ticketID); err != nil {
-			fmt.Fprintf(os.Stderr, "git-work: %v (continuing without ticket details)\n", err)
-		} else {
-			t.providerName = match.Provider.Name
-			if d.Title != "" {
-				t.title = d.Title
-			}
-			t.description = d.Description
-		}
-	}
+	t.displayID = in.DisplayID
+	t.title = in.Title
+	t.description = in.Description
+	t.providerName = in.ProviderName
+	t.folderCase, t.branchCase = in.FolderCase, in.BranchCase
 	if t.slug == "" {
-		t.slug = slugify(t.title)
+		t.slug = naming.Slug(t.title)
 	}
 	return t, nil
 }
