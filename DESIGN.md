@@ -889,10 +889,12 @@ worktree. The primary folder is named after the upstream default branch (`main`/
 detected from `origin/HEAD` at clone/adopt time):
 
 ```
-~/dev/repos/<repo>/
-├── .git            # pointer file: "gitdir: ./main/.git" (core.worktree = ..)
-├── AGENTS.md       # optional per-repo overlay, inlined by template.AggregateInstructions
-└── main/           # the real clone (RepoMain); named after the default branch
+~/dev/repos/
+├── AGENTS.md       # optional repos-root overlay, inlined into every work folder
+└── <repo>/
+    ├── .git        # pointer file: "gitdir: ./main/.git" (core.worktree = ..)
+    ├── AGENTS.md   # optional per-repo overlay, inlined by template.AggregateInstructions
+    └── main/       # the real clone (RepoMain); named after the default branch
 ```
 
 At runtime the primary folder is discovered by parsing the parent `.git` pointer file
@@ -1018,8 +1020,17 @@ specifics, with the identity header first:
 3. **Operator overlay** - the optional `${XDG_CONFIG_HOME:-~/.config}/git-work/AGENTS.md`
    (in `config.OverlayDir()`), for guidance that applies to every work folder but is the
    operator's rather than the tool's. Missing or blank is silently skipped.
-4. **Per-repo sections** - one per included repo, each stating that repo's own branch and
+4. **Repos-root overlay** - the optional `<repos-root>/AGENTS.md` (or `CLAUDE.md`), for
+   guidance about the collection of repos rather than one repo. Read at render time from
+   the configured repos root, so a folder rendered on a machine without that root gets
+   nothing. Missing or blank is silently skipped.
+5. **Per-repo sections** - one per included repo, each stating that repo's own branch and
    inlining its per-repo overlay.
+
+The operator overlay and the repos-root overlay each use one name: the one
+`instructions_file` selects, with the other name as fallback. A location holding both
+names is a name choice rather than two sources, so the configured name wins and the other
+is ignored.
 
 Per-repo overlays have two sources: `<repos-root>/<repo>/AGENTS.md` (or `CLAUDE.md`, the
 other name as fallback) and `<config-dir>/repo-instructions/<repo>.md`. The repos-root

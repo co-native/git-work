@@ -1139,8 +1139,8 @@ func TestCloneModeRmForceCleansFolderLeftovers(t *testing.T) {
 	}
 }
 
-// renameGW returns a helper that runs git-work and fails the test on error.
-func renameGW(t *testing.T, bin string, env []string) func(dir string, args ...string) string {
+// gwMust returns a helper that runs git-work and fails the test on error.
+func gwMust(t *testing.T, bin string, env []string) func(dir string, args ...string) string {
 	t.Helper()
 	return func(dir string, args ...string) string {
 		t.Helper()
@@ -1191,7 +1191,7 @@ func TestRenameWorkFolder(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
 	ob := makeOriginIn(t, home, "beta")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "clone", ob, "beta")
@@ -1295,7 +1295,7 @@ func TestRenameCloneModeAndKeepBranch(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	origin := makeOriginIn(t, home, "alpha")
 	writeCloneModeConfig(t, home, reposRoot, workRoot, map[string]string{"alpha": origin})
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "new", "PROJ-4", "--repos", "alpha", "--non-interactive")
 	oldDir := filepath.Join(workRoot, "PROJ-4-proj-4")
@@ -1338,7 +1338,7 @@ func TestRenameCloneModeAndKeepBranch(t *testing.T) {
 func TestRenameTicketlessAddsTicket(t *testing.T) {
 	bin, home, _, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "-n", "Spike Harness", "--repos", "alpha", "--non-interactive")
@@ -1388,7 +1388,7 @@ func TestRenameTicketlessAddsTicket(t *testing.T) {
 func TestRenameRemote(t *testing.T) {
 	bin, home, _, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "PROJ-5", "--repos", "alpha", "--branch", "PROJ-5-old", "--non-interactive")
@@ -1421,7 +1421,7 @@ func TestRenameRemote(t *testing.T) {
 func TestRenameRefusals(t *testing.T) {
 	bin, home, reposRoot, workRoot, env := newTestEnv(t)
 	oa := makeOriginIn(t, home, "alpha")
-	gw := renameGW(t, bin, env)
+	gw := gwMust(t, bin, env)
 
 	gw(home, "clone", oa, "alpha")
 	gw(home, "new", "PROJ-1", "--repos", "alpha", "--non-interactive")
@@ -1485,5 +1485,61 @@ func TestRenameRefusals(t *testing.T) {
 	}
 	if localBranchExists(t, filepath.Join(reposRoot, "alpha", "main"), "PROJ-1-next") {
 		t.Error("a refusal renamed a branch")
+	}
+}
+
+// A file at the repos root lands in every folder's instructions file, between
+// the operator overlay and the per-repo sections, and follows instructions_file
+// with the other name as the fallback.
+func TestReposRootOverlay(t *testing.T) {
+	bin, home, reposRoot, workRoot, env := newTestEnv(t)
+	origin := makeOriginIn(t, home, "alpha")
+	gw := gwMust(t, bin, env)
+
+	gw(home, "clone", origin, "alpha")
+	os.WriteFile(filepath.Join(reposRoot, "AGENTS.md"), []byte("repos-root guidance\n"), 0o644)
+	gw(home, "new", "-n", "overlay-probe", "--repos", "alpha", "--non-interactive")
+	workDir := filepath.Join(workRoot, "overlay-probe")
+
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(workDir, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return string(data)
+	}
+	if agents := read("AGENTS.md"); !strings.Contains(agents, "repos-root guidance") {
+		t.Fatalf("repos-root overlay missing from the generated file:\n%s", agents)
+	}
+
+	// General rules come first: operator overlay, then repos-root, then repos.
+	cfgDir := filepath.Join(home, ".config", "git-work")
+	if err := os.WriteFile(filepath.Join(cfgDir, "AGENTS.md"), []byte("operator guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw(workDir, "refresh", "--no-pull")
+	agents := read("AGENTS.md")
+	at := -1
+	for _, section := range []string{"operator guidance", "repos-root guidance", "## alpha (./alpha)"} {
+		i := strings.Index(agents, section)
+		if i < 0 {
+			t.Fatalf("section %q missing:\n%s", section, agents)
+		}
+		if i < at {
+			t.Fatalf("section %q is out of order:\n%s", section, agents)
+		}
+		at = i
+	}
+
+	// The fallback name is read too: rename the file, switch the setting, and
+	// the next render picks it up under the new instructions file name.
+	if err := os.Rename(filepath.Join(reposRoot, "AGENTS.md"), filepath.Join(reposRoot, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	gw(home, "config", "set", "instructions_file", "CLAUDE.md")
+	gw(workDir, "refresh", "--no-pull")
+	if claude := read("CLAUDE.md"); !strings.Contains(claude, "repos-root guidance") {
+		t.Errorf("repos-root CLAUDE.md fallback missing after the switch:\n%s", claude)
 	}
 }

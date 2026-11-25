@@ -34,6 +34,11 @@ per-tool contexts via a `CONTEXT-MAP.md`.
 - **Workspace file** - the `<folder>.code-workspace` at a work folder's root, listing the
   work folder root and each repo checkout so one VS Code window holds the whole folder.
   Only its `folders` key belongs to git-work; operator settings in it are preserved.
+- **Overlay** - operator text inlined into a work folder's instructions file. Three
+  sources, in section order: the operator overlay (`<config-dir>/AGENTS.md`), the
+  repos-root overlay (`<repos-root>/AGENTS.md`), and a per-repo overlay
+  (`<repos-root>/<repo>/AGENTS.md` or `<config-dir>/repo-instructions/<repo>.md`). Each
+  follows `instructions_file`, with the other name as the fallback.
 - **Repo registry** - the `repos.<name>.url` config entries that let clone mode create a
   repo without a local primary clone.
 - **Recorded default branch** - `repos[].default_branch` in state, captured when a
